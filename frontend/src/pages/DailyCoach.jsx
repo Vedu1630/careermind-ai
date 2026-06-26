@@ -605,27 +605,15 @@ export default function DailyCoach() {
             Start Today's Session
           </motion.button>
 
+
           <p className="text-center text-[10px] text-[#888] mt-3 font-mono">
             Session automatically expires after {formatTime(timeLeft)}
           </p>
-
-          <div className="text-center mt-6">
-            <button
-              onClick={() => {
-                const today = new Date().toDateString();
-                localStorage.setItem(STORAGE_KEY, JSON.stringify({ date: today, secondsUsed: 0 }));
-                setTimeLeft(SESSION_DURATION);
-                setTimeUsedToday(0);
-              }}
-              className="text-[10px] text-[#6B5CE7]/60 hover:text-[#6B5CE7] transition-all font-mono underline cursor-pointer"
-            >
-              Reset Limit (Demo Mode)
-            </button>
-          </div>
         </motion.div>
       </div>
     );
   }
+
 
   // ── ACTIVE CALL SCREEN ───────────────────────────────────────────────
   if (phase === "active") {
