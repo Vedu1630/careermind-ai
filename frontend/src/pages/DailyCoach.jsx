@@ -245,6 +245,9 @@ export default function DailyCoach() {
 
   // ── Start session ────────────────────────────────────────────────────
   const startSession = useCallback(async (topic = null) => {
+    // Immediately lock the session for today to prevent reload or tab closure bypasses
+    saveTimeUsed(SESSION_DURATION);
+
     setPhase("active");
     setMessages([]);
     conversationHistory.current = [];
@@ -255,8 +258,6 @@ export default function DailyCoach() {
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         const next = prev - 1;
-        const used = SESSION_DURATION - next;
-        saveTimeUsed(used);
 
         // 2-minute warning trigger
         if (next === 120) {
@@ -282,6 +283,7 @@ export default function DailyCoach() {
       agentSpeak(openerText, true);
     }, 800);
   }, [saveTimeUsed, selectedCoach, agentSpeak, endSession]);
+
 
   // ── User submits their response ──────────────────────────────────────
   const handleUserResponse = useCallback(async () => {
