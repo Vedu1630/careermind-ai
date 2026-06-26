@@ -1,5 +1,7 @@
 {
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://careermind-ai-ysr8.onrender.com/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
+
