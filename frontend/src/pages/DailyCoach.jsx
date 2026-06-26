@@ -433,31 +433,16 @@ export default function DailyCoach() {
             </div>
           </div>
 
-          <div className="flex items-center justify-center gap-2 text-xs text-[#555] mb-6">
+
+          <div className="flex items-center justify-center gap-2 text-xs text-[#555] mb-2">
             <CheckCircle className="w-4 h-4 text-[#22C55E]" />
             10 minutes successfully logged today
           </div>
-
-          {/* Unlock for show / Demo bypass */}
-          <motion.button
-            onClick={() => {
-              const today = new Date().toDateString();
-              localStorage.setItem(STORAGE_KEY, JSON.stringify({ date: today, secondsUsed: 0 }));
-              setTimeLeft(SESSION_DURATION);
-              setTimeUsedToday(0);
-              setPhase("idle");
-            }}
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className="w-full py-3 bg-white hover:bg-[#F0EEFF] border border-[#E8E4FF] text-[#6B5CE7] hover:border-[#6B5CE7] font-semibold rounded-xl transition-all flex items-center justify-center gap-2 text-xs cursor-pointer"
-          >
-            <Sparkles className="w-4 h-4 text-[#6B5CE7] animate-pulse" />
-            Unlock for Show (Reset Daily Limit)
-          </motion.button>
         </motion.div>
       </div>
     );
   }
+
 
   // ── IDLE SCREEN ──────────────────────────────────────────────────────
   if (phase === "idle") {
