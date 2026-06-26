@@ -57,7 +57,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOADS_DIR = os.path.join(BASE_DIR, "data", "uploads")
 SKILLS_KB_DIR = os.path.join(BASE_DIR, "data", "skills_kb")
-CHROMA_DB_DIR = os.path.join(BASE_DIR, "chroma_db")
+CHROMA_DB_DIR = os.path.join(BASE_DIR, "data", "chroma_db")
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(CHROMA_DB_DIR, exist_ok=True)
