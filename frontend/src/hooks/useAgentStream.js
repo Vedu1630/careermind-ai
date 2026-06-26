@@ -30,14 +30,17 @@ export function useAgentStream() {
     const userId = getUserId()
     const wsUrl = `/ws/agent-stream?user_id=${userId}`
 
-    // Use relative URL for same-origin, absolute for cross-origin
-    const fullUrl = window.location.protocol === 'https:'
-      ? `wss://${window.location.host}${wsUrl}`
-      : `ws://${window.location.host}${wsUrl}`
+    // In production, connect directly to the Render backend since Vercel rewrites don't support WebSockets
+    const fullUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+      ? (window.location.protocol === 'https:'
+          ? `wss://${window.location.host}${wsUrl}`
+          : `ws://${window.location.host}${wsUrl}`)
+      : `wss://careermind-ai-ysr8.onrender.com/ws/agent-stream?user_id=${userId}`
 
     try {
       const ws = new WebSocket(fullUrl)
       wsRef.current = ws
+
 
       ws.onopen = () => {
         reconnectAttempts.current = 0
