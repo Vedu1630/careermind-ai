@@ -1,0 +1,317 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── CSS Custom Properties — Design System ─────────────────────────────── */
+:root {
+  /* Backgrounds */
+  --bg-base:        #F0EEFF;
+  --bg-white:       #FFFFFF;
+  --bg-soft:        #FAFAFA;
+  --bg-card:        #FFFFFF;
+
+  /* Primary — Purple */
+  --primary:        #6B5CE7;
+  --primary-light:  #8B7CF8;
+  --primary-pale:   #E8E4FF;
+  --primary-gradient: linear-gradient(135deg, #6B5CE7, #8B7CF8);
+
+  /* Right panel gradient */
+  --panel-gradient: linear-gradient(135deg, #6B5CE7 0%, #8B7CF8 40%, #A78BFA 100%);
+
+  /* Text */
+  --text-primary:   #111111;
+  --text-secondary: #555555;
+  --text-muted:     #888888;
+  --text-faint:     #BBBBBB;
+  --text-white:     #FFFFFF;
+  --text-white-dim: rgba(255,255,255,0.75);
+
+  /* Borders */
+  --border:         #E8E4FF;
+  --border-soft:    #F0EEFF;
+
+  /* Status */
+  --success:        #22C55E;
+  --warning:        #F59E0B;
+  --error:          #EF4444;
+  --info:           #3B82F6;
+
+  /* Shadows */
+  --shadow-sm:      0 1px 4px rgba(107,92,231,0.08);
+  --shadow-md:      0 4px 20px rgba(107,92,231,0.12);
+  --shadow-lg:      0 8px 40px rgba(107,92,231,0.16);
+  --shadow-card:    0 2px 12px rgba(0,0,0,0.06);
+}
+
+/* ── Base Reset ────────────────────────────────────────────────────────── */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--text-primary);
+  }
+
+  ::selection {
+    background-color: rgba(107, 92, 231, 0.25);
+    color: var(--text-primary);
+  }
+}
+
+/* ── Custom Scrollbar ────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--primary-pale);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+/* ── Utility Classes ─────────────────────────────────────────────────── */
+@layer utilities {
+  /* Gradient text */
+  .text-gradient {
+    background: linear-gradient(135deg, #6B5CE7 0%, #8B7CF8 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Score ring animation */
+  .score-ring {
+    transition: stroke-dashoffset 1.5s ease-in-out;
+  }
+
+  /* Hide scrollbar but keep scroll */
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+/* ── Component Classes ───────────────────────────────────────────────── */
+@layer components {
+  /* Cards */
+  .card {
+    @apply rounded-2xl p-6 transition-all duration-200;
+    background: var(--bg-white);
+    border: 1.5px solid var(--border);
+    box-shadow: var(--shadow-card);
+  }
+  .card:hover {
+    border-color: #D5D0F5;
+    box-shadow: var(--shadow-md);
+  }
+
+  /* Inputs */
+  .input-base {
+    @apply w-full outline-none transition-all duration-200;
+    padding: 11px 14px;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    font-size: 13px;
+    color: var(--text-primary);
+    background: var(--bg-soft);
+    font-family: 'Inter', sans-serif;
+  }
+  .input-base:focus {
+    border-color: var(--primary);
+    background: var(--bg-white);
+  }
+  .input-base::placeholder {
+    color: #CCC;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-3 rounded-xl outline-none transition-all duration-200;
+    background: var(--bg-soft);
+    border: 1.5px solid var(--border);
+    color: var(--text-primary);
+  }
+  .input-field:focus {
+    border-color: var(--primary);
+    background: var(--bg-white);
+    box-shadow: 0 0 0 3px rgba(107, 92, 231, 0.1);
+  }
+  .input-field::placeholder {
+    color: #CCC;
+  }
+
+  /* Primary button */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-white transition-all duration-200 cursor-pointer select-none;
+    background: var(--primary-gradient);
+    box-shadow: 0 4px 15px rgba(107, 92, 231, 0.25);
+    font-size: 13px;
+    letter-spacing: -0.02em;
+  }
+  .btn-primary:hover {
+    opacity: 0.92;
+    transform: translateY(-1px);
+    box-shadow: 0 8px 25px rgba(107, 92, 231, 0.35);
+  }
+  .btn-primary:active {
+    transform: translateY(0);
+  }
+
+  /* Secondary button */
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-all duration-200 cursor-pointer select-none;
+    background: var(--bg-white);
+    border: 1.5px solid var(--border);
+    color: var(--primary);
+  }
+  .btn-secondary:hover {
+    border-color: var(--primary);
+    background: var(--primary-pale);
+  }
+
+  /* Ghost button */
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all duration-200 cursor-pointer select-none;
+    color: var(--text-secondary);
+    background: transparent;
+  }
+  .btn-ghost:hover {
+    color: var(--primary);
+    background: var(--bg-base);
+  }
+
+  /* Badges */
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold;
+  }
+  .badge-primary {
+    @apply badge;
+    background: var(--primary-pale);
+    color: var(--primary);
+  }
+  .badge-purple {
+    background: var(--primary-pale);
+    color: var(--primary);
+  }
+  .badge-success {
+    @apply badge;
+    background: #DCFCE7;
+    color: #16A34A;
+  }
+  .badge-green {
+    background: #DCFCE7;
+    color: #16A34A;
+  }
+  .badge-warning {
+    @apply badge;
+    background: #FEF3C7;
+    color: #D97706;
+  }
+  .badge-orange {
+    background: #FEF3C7;
+    color: #D97706;
+  }
+  .badge-danger {
+    @apply badge;
+    background: #FEE2E2;
+    color: #DC2626;
+  }
+  .badge-red {
+    background: #FEE2E2;
+    color: #DC2626;
+  }
+  .badge-accent {
+    @apply badge;
+    background: var(--primary-pale);
+    color: var(--primary);
+  }
+
+  /* Section label */
+  .section-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-faint);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  /* Page container */
+  .page-container {
+    @apply max-w-6xl mx-auto px-4 sm:px-6;
+  }
+}
+
+/* ── Animations ─────────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes record-pulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { transform: scale(1.05); box-shadow: 0 0 0 16px rgba(239, 68, 68, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+@keyframes waveform {
+  0%, 100% { height: 8px; }
+  50% { height: 32px; }
+}
+
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-record-pulse {
+  animation: record-pulse 1.5s ease-in-out infinite;
+}
+
+/* ── Diff viewer overrides ───────────────────────────────────────────── */
+.react-diff-viewer {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace !important;
+  font-size: 13px !important;
+}
+
+/* ── Page transition wrapper ─────────────────────────────────────────── */
+.page-wrapper {
+  min-height: calc(100vh - 72px);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# FastAPI / Backend
+backend/.env
+frontend/.env
+backend/careermind.db
+backend/chroma_db/
+backend/data/uploads/*.pdf
+backend/data/uploads/
+
+# Whisper
+*.pt
+whisper_cache/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.tsbuildinfo
+
+# Test
+coverage/
+.pytest_cache/
+.mypy_cache/
+
+# LangSmith / LangChain
+.langchain/
+
+# ChromaDB
+chroma_db/
