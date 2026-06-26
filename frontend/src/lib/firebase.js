@@ -209,10 +209,133 @@ const mockOnAuthChange = (callback) => {
   };
 };
 
-// ── EXPORTS (AUTO-SWITCHING) ──────────────────────────────────────────
-export const signInWithGoogle = useMockAuth ? mockSignInWithGoogle : realSignInWithGoogle;
-export const signInWithEmail = useMockAuth ? mockSignInWithEmail : realSignInWithEmail;
-export const registerWithEmail = useMockAuth ? mockRegisterWithEmail : realRegisterWithEmail;
-export const resetPassword = useMockAuth ? mockResetPassword : realResetPassword;
-export const logOut = useMockAuth ? mockLogOut : realLogOut;
-export const onAuthChange = useMockAuth ? mockOnAuthChange : realOnAuthChange;
+// ── UNIFIED EVENT DISPATCHER & DYNAMIC AUTO-SWITCHING ──────────────────
+const authCallbacks = new Set();
+
+// Register real Firebase listener
+if (authInstance) {
+  realOnAuthChange((firebaseUser) => {
+    if (!useMockAuth) {
+      authCallbacks.forEach(cb => cb(firebaseUser));
+    }
+  });
+}
+
+// Register mock listener
+mockAuthListeners.add((mockUser) => {
+  if (useMockAuth) {
+    authCallbacks.forEach(cb => cb(mockUser));
+  }
+});
+
+// Dynamic wrapper exports
+export const onAuthChange = (callback) => {
+  authCallbacks.add(callback);
+  
+  // Trigger initial callback
+  if (useMockAuth) {
+    callback(getMockSession());
+  } else if (authInstance) {
+    callback(authInstance.currentUser);
+  } else {
+    callback(null);
+  }
+  
+  return () => {
+    authCallbacks.delete(callback);
+  };
+};
+
+export const signInWithGoogle = async () => {
+  if (useMockAuth) return mockSignInWithGoogle();
+  try {
+    return await realSignInWithGoogle();
+  } catch (err) {
+    console.error("Real Firebase Google Sign-In failed:", err);
+    if (
+      err.code === "auth/unauthorized-domain" ||
+      err.code === "auth/operation-not-allowed" ||
+      err.code === "auth/invalid-api-key" ||
+      err.code === "auth/configuration-not-found" ||
+      !err.code
+    ) {
+      console.warn("Falling back to Mock Auth due to configuration error.");
+      useMockAuth = true;
+      const user = await mockSignInWithGoogle();
+      return user;
+    }
+    throw err;
+  }
+};
+
+export const signInWithEmail = async (email, password) => {
+  if (useMockAuth) return mockSignInWithEmail(email, password);
+  try {
+    return await realSignInWithEmail(email, password);
+  } catch (err) {
+    console.error("Real Firebase Email Sign-In failed:", err);
+    if (
+      err.code === "auth/unauthorized-domain" ||
+      err.code === "auth/operation-not-allowed" ||
+      err.code === "auth/invalid-api-key" ||
+      err.code === "auth/configuration-not-found" ||
+      !err.code
+    ) {
+      console.warn("Falling back to Mock Auth due to configuration/domain error.");
+      useMockAuth = true;
+      return mockSignInWithEmail(email, password);
+    }
+    throw err;
+  }
+};
+
+export const registerWithEmail = async (name, email, password) => {
+  if (useMockAuth) return mockRegisterWithEmail(name, email, password);
+  try {
+    return await realRegisterWithEmail(name, email, password);
+  } catch (err) {
+    console.error("Real Firebase Registration failed:", err);
+    if (
+      err.code === "auth/unauthorized-domain" ||
+      err.code === "auth/operation-not-allowed" ||
+      err.code === "auth/invalid-api-key" ||
+      err.code === "auth/configuration-not-found" ||
+      !err.code
+    ) {
+      console.warn("Falling back to Mock Auth due to configuration/domain error.");
+      useMockAuth = true;
+      return mockRegisterWithEmail(name, email, password);
+    }
+    throw err;
+  }
+};
+
+export const resetPassword = async (email) => {
+  if (useMockAuth) return mockResetPassword(email);
+  try {
+    return await realResetPassword(email);
+  } catch (err) {
+    console.error("Real Firebase Password Reset failed:", err);
+    if (
+      err.code === "auth/unauthorized-domain" ||
+      err.code === "auth/operation-not-allowed" ||
+      err.code === "auth/invalid-api-key" ||
+      err.code === "auth/configuration-not-found" ||
+      !err.code
+    ) {
+      console.warn("Falling back to Mock Auth due to configuration/domain error.");
+      useMockAuth = true;
+      return mockResetPassword(email);
+    }
+    throw err;
+  }
+};
+
+export const logOut = async () => {
+  if (useMockAuth) {
+    await mockLogOut();
+  } else {
+    await realLogOut();
+  }
+};
+
