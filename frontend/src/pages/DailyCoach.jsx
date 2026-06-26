@@ -5,6 +5,8 @@ import { useSpeechSynthesis } from "../hooks/useSpeechSynthesis";
 import { useVoiceRecorder } from "../hooks/useVoiceRecorder";
 import api, { getOrCreateToken } from "../lib/api";
 import useStore from "../store/useStore";
+import useAuthStore from "../store/useAuthStore";
+
 
 const COACH_PERSONAS = [
   {
@@ -68,6 +70,9 @@ const STORAGE_KEY = "daily_coach_session";
 export default function DailyCoach() {
   const { jobs } = useStore();
   const selectedJob = jobs?.selectedJob;
+  const { user } = useAuthStore();
+  const userId = user?.uid || 'guest';
+
 
   // Session state
   const [phase, setPhase] = useState("idle"); 
@@ -112,7 +117,8 @@ export default function DailyCoach() {
     initSession();
 
     const today = new Date().toDateString();
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    const storageKey = `daily_coach_session_${userId}`;
+    const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
 
     if (stored.date === today) {
       const used = stored.secondsUsed || 0;
@@ -121,11 +127,13 @@ export default function DailyCoach() {
         setPhase("locked");
         setTimeLeft(0);
       } else {
+        setPhase("idle");
         setTimeLeft(SESSION_DURATION - used);
       }
     } else {
       // New day — reset
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ date: today, secondsUsed: 0 }));
+      localStorage.setItem(storageKey, JSON.stringify({ date: today, secondsUsed: 0 }));
+      setPhase("idle");
       setTimeLeft(SESSION_DURATION);
       setTimeUsedToday(0);
     }
@@ -138,7 +146,7 @@ export default function DailyCoach() {
       return Math.floor((midnight - now) / 1000);
     };
     setSecondsUntilMidnight(getSecondsToMidnight());
-  }, []);
+  }, [userId]);
 
   // ── Live Countdown to Midnight Timer ───────────────────────────────
   useEffect(() => {
@@ -162,8 +170,9 @@ export default function DailyCoach() {
   // ── Save time used to localStorage ──────────────────────────────────
   const saveTimeUsed = useCallback((secondsUsed) => {
     const today = new Date().toDateString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ date: today, secondsUsed }));
-  }, []);
+    const storageKey = `daily_coach_session_${userId}`;
+    localStorage.setItem(storageKey, JSON.stringify({ date: today, secondsUsed }));
+  }, [userId]);
 
   // ── End session ──────────────────────────────────────────────────────
   const endSession = useCallback(async () => {
