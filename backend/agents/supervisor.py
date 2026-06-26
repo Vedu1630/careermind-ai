@@ -138,15 +138,11 @@ async def resume_rewriter_node(state: AgentState) -> AgentState:
     def progress_cb(msg: str):
         _emit(user_id, "Resume Rewriter", "working", msg)
 
-    # Run in thread pool (sync function)
-    loop = asyncio.get_event_loop()
-    rewritten = await loop.run_in_executor(
-        None,
-        lambda: rewrite_resume(
-            state.get("resume_text", ""),
-            selected_job,
-            progress_callback=progress_cb,
-        )
+    # Call the async rewrite_resume function directly
+    rewritten = await rewrite_resume(
+        state.get("resume_path", ""),
+        selected_job,
+        progress_callback=progress_cb,
     )
 
     changes = len(rewritten.get("changes_summary", []))

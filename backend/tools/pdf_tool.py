@@ -1,5 +1,4 @@
 import fitz  # pymupdf
-import pdfplumber
 import io
 import os
 import difflib
@@ -17,11 +16,16 @@ class PDFResumeHandler:
         Used to send to Gemini for rewriting.
         """
         pages_text = []
-        with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text(x_tolerance=2, y_tolerance=2)
+        try:
+            doc = fitz.open(file_path)
+            for page in doc:
+                text = page.get_text("text")
                 if text:
                     pages_text.append(text)
+            doc.close()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("PyMuPDF text extraction failed: %s", e)
         return "\n\n".join(pages_text)
 
     def extract_text_blocks_with_positions(self, file_path: str) -> list:

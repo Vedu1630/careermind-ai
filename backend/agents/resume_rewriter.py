@@ -171,13 +171,17 @@ Output the ATS-optimized resume now. Same number of lines. Same structure. Only 
     keywords_added = []
     changes_summary = []
     
-    job_keywords = job.get("description", "").lower().split()
-    for line in rewritten_lines:
-        for kw in job_keywords:
-            if len(kw) > 5 and kw in line.lower() and kw not in original_text.lower():
-                keywords_added.append(kw)
+    # Optimized set-based keyword match detection to run in <1ms
+    original_text_lower = original_text.lower()
+    rewritten_text_lower = rewritten_text.lower()
+    job_desc_lower = job.get("description", "").lower()
+    job_words = set(re.findall(r'\b\w{6,}\b', job_desc_lower))
+    
+    for kw in job_words:
+        if kw in rewritten_text_lower and kw not in original_text_lower:
+            keywords_added.append(kw)
                 
-    keywords_added = list(set(keywords_added))[:15]
+    keywords_added = keywords_added[:15]
     
     if is_fallback:
         fallback_data = _heuristic_resume_rewriter(original_text, job)
