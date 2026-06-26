@@ -33,71 +33,10 @@ def _parse_json_from_llm(raw: str) -> dict:
 
 async def _score_job_async(job: dict, resume_analysis: dict) -> dict:
     """
-    Use Gemini to compute how well a job matches the resume.
-    Runs in a thread pool since LangChain LLM calls are sync.
+    Compute how well a job matches the resume using a high-fidelity local algorithm.
+    This is extremely fast, prevents Gemini 429 rate limits, and runs instantly.
     """
-    loop = asyncio.get_event_loop()
-
-    def _call_llm():
-        skills_found = ", ".join(resume_analysis.get("skills_found", [])[:15])
-        experience_level = resume_analysis.get("experience_level", "junior")
-        job_title = job.get("title", "")
-        job_desc = job.get("description", "")[:1500]
-        required_skills = ", ".join(job.get("required_skills", []))
-
-        prompt = f"""You are a career advisor. Score how well this candidate matches this job.
-
-CANDIDATE PROFILE:
-- Skills: {skills_found}
-- Experience level: {experience_level}
-
-JOB:
-- Title: {job_title}
-- Required skills: {required_skills if required_skills else "Not specified"}
-- Description: {job_desc}
-
-Return ONLY a JSON object (no markdown, no extra text):
-{{
-  "match_score": 85,
-  "matched_skills": ["Python", "FastAPI"],
-  "missing_skills": ["Kubernetes", "Terraform"],
-  "recommendation": "Strong match — highlight your FastAPI and Python experience in your application.",
-  "fit_level": "strong"
-}}
-
-Rules:
-- match_score: integer 0-100
-- fit_level: exactly one of "strong" (≥75), "partial" (50-74), "weak" (<50)
-- matched_skills: skills in candidate profile that appear in the job
-- missing_skills: key job skills not in candidate profile (max 5)
-- recommendation: 1-2 sentence actionable advice
-- Return ONLY the JSON"""
-
-        response = llm.invoke(prompt)
-        return response.content if hasattr(response, "content") else str(response)
-
     try:
-        raw = await loop.run_in_executor(None, _call_llm)
-        scoring = _parse_json_from_llm(raw)
-
-        # Validate and normalize
-        match_score = int(scoring.get("match_score", 50))
-        match_score = max(0, min(100, match_score))
-
-        fit_level = scoring.get("fit_level", "partial")
-        if fit_level not in ("strong", "partial", "weak"):
-            fit_level = "strong" if match_score >= 75 else "partial" if match_score >= 50 else "weak"
-
-        return {
-            "job": job,
-            "match_score": match_score,
-            "matched_skills": scoring.get("matched_skills", []),
-            "missing_skills": scoring.get("missing_skills", []),
-            "recommendation": scoring.get("recommendation", "Review the job requirements carefully."),
-            "fit_level": fit_level,
-        }
-    except Exception as e:
-        logger.warning("Job scoring failed for '%s' (LLM 429 or error), using high-fidelity fallback: %s", job.get("title"), e)
         job_text = (job.get("description", "") + " " + job.get("title", "")).lower()
         
         # Calculate matched skills
@@ -150,6 +89,17 @@ Rules:
             "recommendation": recommendation,
             "fit_level": fit_level,
         }
+    except Exception as e:
+        logger.error("Job scoring failed: %s", e)
+        return {
+            "job": job,
+            "match_score": 50,
+            "matched_skills": [],
+            "missing_skills": [],
+            "recommendation": "Review the job requirements carefully.",
+            "fit_level": "partial",
+        }
+
 
 
 async def scrape_and_score(
