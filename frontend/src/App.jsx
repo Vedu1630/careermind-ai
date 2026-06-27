@@ -9,6 +9,7 @@ import JobMatches from "./pages/JobMatches";
 import ResumeRewriter from "./pages/ResumeRewriter";
 import MockInterview from "./pages/MockInterview";
 import DailyCoach from "./pages/DailyCoach";
+import AgentStatus from "./pages/AgentStatus";
 import Navbar from "./components/Navbar";
 import { useAgentStream } from "./hooks/useAgentStream";
 import api from "./lib/api";
@@ -130,6 +131,7 @@ function AppContent() {
               <Route path="/rewrite"     element={<Protected><ResumeRewriter /></Protected>} />
               <Route path="/interview"   element={<Protected><MockInterview /></Protected>} />
               <Route path="/daily-coach" element={<Protected><DailyCoach /></Protected>} />
+              <Route path="/status"      element={<Protected><AgentStatus /></Protected>} />
               <Route path="*"            element={<Navigate to="/dashboard" replace />} />
             </Routes>
           </AnimatePresence>

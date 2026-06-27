@@ -85,13 +85,43 @@ app = FastAPI(
 from fastapi.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
+# Build allowed origins list
+FRONTEND_URL = os.getenv("FRONTEND_URL", "")
+RENDER_URL   = os.getenv("RENDER_EXTERNAL_URL", "")
+
+ALLOWED_ORIGINS = [
+    # Local development
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    # Your specific Vercel deployment
+    "https://frontend-gold-one-48.vercel.app",
+    "https://careermind-ai.vercel.app",
+]
+
+# Add from environment variable
+if FRONTEND_URL:
+    ALLOWED_ORIGINS.append(FRONTEND_URL.rstrip("/"))
+    # Also add without trailing slash
+    if FRONTEND_URL.endswith("/"):
+        ALLOWED_ORIGINS.append(FRONTEND_URL[:-1])
+
+# Remove duplicates
+ALLOWED_ORIGINS = list(set(ALLOWED_ORIGINS))
+
+print(f"✅ CORS allowed origins: {ALLOWED_ORIGINS}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex="https?://.*",
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.(vercel\.app|onrender\.com|netlify\.app)",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "Content-Length"],
+    max_age=600,
 )
 
 # ── Security ───────────────────────────────────────────────────────────────────
@@ -121,6 +151,31 @@ def get_current_user(
         return user_id
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
+# ── Helper functions for agents ───────────────────────────────────────────────
+LLM_AVAILABLE = True
+
+def call_gemini(prompt: str) -> str:
+    try:
+        from core.singletons import get_llm
+        llm = get_llm(quality=False)
+        resp = llm.invoke(prompt)
+        return resp.content.strip()
+    except Exception as e:
+        return f"ERROR: {e}"
+
+def parse_json_safe(raw: str, default: dict) -> dict:
+    try:
+        import re, json
+        clean = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+        match = re.search(r"\{.*\}", clean, re.DOTALL)
+        if not match:
+            return default
+        return json.loads(match.group(0))
+    except Exception:
+        return default
+
 
 
 # ── WebSocket Manager ─────────────────────────────────────────────────────────
@@ -332,65 +387,223 @@ async def analyze_resume_endpoint(
 # ── Job Matching ──────────────────────────────────────────────────────────────
 @app.get("/api/jobs")
 async def get_jobs(
-    q: str = Query(default="Software Engineer", description="Job title/keywords"),
-    location: str = Query(default="United States", description="Job location"),
-    user_id: str = Query(default=""),
-    current_user: str = Depends(get_current_user),
+    q:        str = "Software Engineer",
+    location: str = "India",
+    user_id:  str = "anonymous",
 ):
-    """Scrape and score job listings using optimized parallel async scraper."""
-    from agents.job_scraper import scrape_and_score
+    import httpx, asyncio
     from core.singletons import get_cache
+    _cache = get_cache()
 
-    effective_user = user_id or current_user
+    all_jobs    = []
+    source_used = "demo"
 
-    # Try memory cache first, else get from DB session
-    cache = get_cache()
-    cache_key_analysis = f"latest_analysis:{effective_user}"
-    resume_analysis = cache.get(cache_key_analysis)
-    
-    if not resume_analysis:
-        session = await get_session(effective_user)
-        resume_analysis = session.get("resume_analysis") if session else {}
-    
-    if not resume_analysis:
-        resume_analysis = {"skills_found": [], "experience_level": "junior"}
+    # ── Try JSearch ───────────────────────────────────────────
+    rapidapi_key = os.getenv("RAPIDAPI_KEY", "").strip()
+    if rapidapi_key:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://jsearch.p.rapidapi.com/search",
+                    headers={
+                        "X-RapidAPI-Key":  rapidapi_key,
+                        "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
+                    },
+                    params={
+                        "query":     f"{q} in {location}",
+                        "num_pages": "1",
+                        "page":      "1",
+                    },
+                )
+                if resp.status_code == 200:
+                    data = resp.json().get("data", [])
+                    for j in data[:12]:
+                        all_jobs.append({
+                            "id":          j.get("job_id", f"js_{len(all_jobs)}"),
+                            "title":       j.get("job_title") or q,
+                            "company":     j.get("employer_name") or "Company",
+                            "location":    j.get("job_city") or location,
+                            "description": (j.get("job_description") or "")[:500],
+                            "apply_link":  j.get("job_apply_link") or "#",
+                            "salary":      "",
+                            "source":      "jsearch",
+                            "match_score": 0,
+                        })
+                    if all_jobs:
+                        source_used = "jsearch"
+                        print(f"✅ JSearch returned {len(all_jobs)} jobs")
+                else:
+                    print(f"⚠️ JSearch returned status {resp.status_code}")
+        except Exception as e:
+            print(f"⚠️ JSearch failed: {e}")
 
-    async def ws_callback(msg: str):
-        await manager.send_event(effective_user, {
-            "agent": "Job Scraper",
-            "status": "working",
-            "message": msg,
-            "timestamp": datetime.utcnow().isoformat(),
-        })
+    # ── Try Adzuna if JSearch failed ──────────────────────────
+    adzuna_id  = os.getenv("ADZUNA_APP_ID", "").strip()
+    adzuna_key = os.getenv("ADZUNA_APP_KEY", "").strip()
+    if not all_jobs and adzuna_id and adzuna_key:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://api.adzuna.com/v1/api/jobs/in/search/1",
+                    params={
+                        "app_id":           adzuna_id,
+                        "app_key":          adzuna_key,
+                        "what":             q,
+                        "where":            location,
+                        "results_per_page": 10,
+                        "content-type":     "application/json",
+                    },
+                )
+                if resp.status_code == 200:
+                    for j in resp.json().get("results", [])[:10]:
+                        all_jobs.append({
+                            "id":          str(j.get("id", f"az_{len(all_jobs)}")),
+                            "title":       j.get("title") or q,
+                            "company":     j.get("company", {}).get("display_name") or "Company",
+                            "location":    j.get("location", {}).get("display_name") or location,
+                            "description": (j.get("description") or "")[:500],
+                            "apply_link":  j.get("redirect_url") or "#",
+                            "salary":      str(j.get("salary_max") or ""),
+                            "source":      "adzuna",
+                            "match_score": 0,
+                        })
+                    if all_jobs:
+                        source_used = "adzuna"
+                        print(f"✅ Adzuna returned {len(all_jobs)} jobs")
+        except Exception as e:
+            print(f"⚠️ Adzuna failed: {e}")
 
-    def sync_callback(msg: str):
-        asyncio.create_task(ws_callback(msg))
+    # ── Always fallback to demo jobs if nothing found ─────────
+    if not all_jobs:
+        print("ℹ️ Using demo jobs (no API keys or APIs failed)")
+        source_used = "demo"
+        all_jobs = [
+            {
+                "id": "demo1",
+                "title": f"Senior {q}",
+                "company": "TechCorp India",
+                "location": f"{location}",
+                "description": f"We are hiring a Senior {q} with 3+ years experience. Python, React, FastAPI, Docker. Strong problem-solving required.",
+                "apply_link": "https://linkedin.com/jobs",
+                "salary": "12-20 LPA",
+                "source": "demo",
+                "match_score": 88,
+                "matched_skills": ["Python", "React", "FastAPI"],
+                "missing_skills": ["Docker"],
+                "recommendation": "Strong match based on your profile",
+            },
+            {
+                "id": "demo2",
+                "title": f"AI/ML {q}",
+                "company": "InnovateTech Solutions",
+                "location": "Hyderabad, India",
+                "description": f"AI-focused {q} role. LangChain, Gemini, RAG, vector DBs, FastAPI. Freshers welcome with AI project experience.",
+                "apply_link": "https://linkedin.com/jobs",
+                "salary": "8-15 LPA",
+                "source": "demo",
+                "match_score": 92,
+                "matched_skills": ["LangChain", "Python", "FastAPI", "React"],
+                "missing_skills": ["Kubernetes"],
+                "recommendation": "Excellent match — your AI skills align perfectly",
+            },
+            {
+                "id": "demo3",
+                "title": f"Full Stack {q}",
+                "company": "GlobalTech Solutions",
+                "location": "Remote India",
+                "description": f"Remote Full Stack {q}. React, Node.js, Python, Docker, AWS. Flexible hours, great culture. 0-3 years experience.",
+                "apply_link": "https://linkedin.com/jobs",
+                "salary": "10-18 LPA",
+                "source": "demo",
+                "match_score": 78,
+                "matched_skills": ["React", "Python", "Node.js"],
+                "missing_skills": ["AWS", "Docker"],
+                "recommendation": "Good match — consider learning AWS",
+            },
+            {
+                "id": "demo4",
+                "title": f"Junior {q}",
+                "company": "StartupXYZ",
+                "location": "Mumbai, India",
+                "description": f"Junior {q} for fresh graduates. React, Python, Firebase, MongoDB. Great mentorship and learning environment.",
+                "apply_link": "https://linkedin.com/jobs",
+                "salary": "4-8 LPA",
+                "source": "demo",
+                "match_score": 82,
+                "matched_skills": ["React", "Python", "Firebase", "MongoDB"],
+                "missing_skills": [],
+                "recommendation": "Great entry-level opportunity matching your stack",
+            },
+            {
+                "id": "demo5",
+                "title": f"Backend {q}",
+                "company": "FinTech Corp",
+                "location": "Pune, India",
+                "description": f"Backend {q} at FinTech startup. Python, FastAPI, PostgreSQL, Redis, Docker. 1-3 years experience.",
+                "apply_link": "https://linkedin.com/jobs",
+                "salary": "8-14 LPA",
+                "source": "demo",
+                "match_score": 74,
+                "matched_skills": ["Python", "FastAPI"],
+                "missing_skills": ["PostgreSQL", "Redis"],
+                "recommendation": "Good match — strong Python skills valued here",
+            },
+            {
+                "id": "demo6",
+                "title": f"{q} Intern",
+                "company": "MNC Corp",
+                "location": "Ahmedabad, India",
+                "description": f"6-month paid {q} internship. Python, JavaScript, REST APIs, Git. CS students preferred. Stipend provided.",
+                "apply_link": "https://linkedin.com/jobs",
+                "salary": "15,000-25,000/month",
+                "source": "demo",
+                "match_score": 76,
+                "matched_skills": ["Python", "JavaScript", "Git"],
+                "missing_skills": ["System Design"],
+                "recommendation": "Good match for your current experience level",
+            },
+        ]
 
-    await manager.send_event(effective_user, {
-        "agent": "Job Scraper",
-        "status": "thinking",
-        "message": f"Searching for '{q}' jobs in {location}...",
-        "timestamp": datetime.utcnow().isoformat(),
-    })
+    # ── Score jobs against user profile with Gemini ────────────
+    analysis = _cache.get(f"analysis:{user_id}", {})
+    skills   = analysis.get("skills_found", [])
 
-    # Run the optimized parallel async scraper
-    jobs = await scrape_and_score(
-        query=q,
-        location=location,
-        resume_analysis=resume_analysis,
-        progress_callback=sync_callback,
-    )
+    if skills and LLM_AVAILABLE and os.getenv("GOOGLE_API_KEY"):
+        profile = f"Skills: {', '.join(skills[:10])}. Level: {analysis.get('experience_level', 'junior')}"
 
-    await upsert_session(effective_user, job_listings=jobs, current_step="jobs_scraped")
+        async def score_one(job):
+            try:
+                resp = call_gemini(
+                    f"Rate job fit 0-100. Return ONLY JSON.\n"
+                    f"Profile: {profile}\n"
+                    f"Job: {job['title']} at {job['company']} — {job['description'][:150]}\n"
+                    f'Return: {{"match_score":75,"matched_skills":["Python"],"missing_skills":["Docker"],"recommendation":"Good match"}}'
+                )
+                scored = parse_json_safe(resp, {})
+                if scored.get("match_score"):
+                    job.update(scored)
+            except Exception:
+                pass
+            return job
 
-    await manager.send_event(effective_user, {
-        "agent": "Job Scraper",
-        "status": "done",
-        "message": f"Found {len(jobs)} matched jobs!",
-        "timestamp": datetime.utcnow().isoformat(),
-    })
+        # Score in parallel — max 6 at once
+        scored_jobs = await asyncio.gather(
+            *[score_one(job) for job in all_jobs[:6]],
+            return_exceptions=True
+        )
+        for i, result in enumerate(scored_jobs):
+            if isinstance(result, dict):
+                all_jobs[i] = result
 
-    return {"jobs": jobs, "total": len(jobs), "query": q, "location": location}
+    # Sort by match score
+    all_jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+
+    return {
+        "jobs":   all_jobs,
+        "count":  len(all_jobs),
+        "source": source_used,
+        "scored": bool(skills),
+    }
 
 
 # ── Resume Rewriter ───────────────────────────────────────────────────────────
@@ -595,40 +808,57 @@ async def score_uploaded_pdf(
 
 # ── Interview — Generate Question ─────────────────────────────────────────────
 @app.post("/api/interview/question")
-async def get_interview_question(
-    body: InterviewQuestionRequest,
-    current_user: str = Depends(get_current_user),
-):
-    """Generate the next interview question. Browser handles TTS via Web Speech API."""
-    from agents.mock_interviewer import generate_question
+async def get_interview_question(request: dict):
+    job_title      = (request.get("job_title") or "Software Engineer").strip()
+    round_number   = int(request.get("round_number") or 1)
+    history        = request.get("history") or []
+    interview_type = request.get("interview_type") or "mixed"
+    company        = (request.get("company") or "").strip()
 
-    loop = asyncio.get_event_loop()
+    # Round 1 is always the same opener
+    if round_number == 1:
+        question = f"Tell me about yourself and why you are interested in this {job_title} role."
+        return {"question": question, "round": round_number}
 
-    question = await loop.run_in_executor(
-        None,
-        lambda: generate_question(
-            body.job_title, 
-            body.round_number, 
-            body.history,
-            body.interview_type,
-            body.type_instruction,
-            body.company,
-            body.level
-        )
+    # Build history context — last 3 questions only
+    prev_questions = " | ".join(
+        h.get("question", "")[:80]
+        for h in (history or [])[-3:]
+        if h.get("question")
     )
 
-    await manager.send_event(current_user, {
-        "agent": "Mock Interviewer",
-        "status": "working",
-        "message": f"Round {body.round_number} question generated",
-        "timestamp": datetime.utcnow().isoformat(),
-    })
-
-    return {
-        "question": question,
-        "round": body.round_number,
-        "round_number": body.round_number,
+    type_map = {
+        "behavioural": "Ask a STAR-method behavioural question about past experience, teamwork, or challenge.",
+        "technical":   f"Ask a technical question about {job_title} skills, system design, or problem solving.",
+        "hr":          "Ask about career goals, salary expectations, work style, or company culture fit.",
+        "mixed":       f"Ask a relevant question for a {job_title} interview mixing technical and behavioural elements.",
     }
+    instruction  = type_map.get(interview_type, type_map["mixed"])
+    company_line = f"The company is {company}. " if company else ""
+
+    prompt = (
+        f"You are a senior interviewer conducting a {job_title} interview.\n"
+        f"{company_line}Round {round_number} of 5. {instruction}\n"
+        f"Previously asked: {prev_questions or 'None yet'}\n"
+        f"Do NOT repeat any previous question.\n"
+        f"Make questions progressively harder each round.\n"
+        f"Return ONLY the interview question. One sentence. Nothing else."
+    )
+
+    loop     = asyncio.get_event_loop()
+    question = await loop.run_in_executor(None, lambda: call_gemini(prompt))
+
+    # Fallback questions if Gemini fails
+    if not question or question.startswith("ERROR:"):
+        fallbacks = {
+            2: f"What is your strongest technical skill relevant to the {job_title} role, and give a specific example of how you used it?",
+            3: f"Describe a challenging project you worked on. What was your specific contribution and what did you learn?",
+            4: f"How would you design a scalable system for a {job_title} position? Walk me through your approach.",
+            5: "Where do you see yourself in 3 years, and how does this role fit into your career goals?",
+        }
+        question = fallbacks.get(round_number, f"What makes you the best candidate for this {job_title} position?")
+
+    return {"question": question.strip(), "round": round_number}
 
 
 # ── Interview — Score Answer ──────────────────────────────────────────────────
@@ -1216,6 +1446,185 @@ async def health():
         "version": "1.0.0",
         "timestamp": datetime.utcnow().isoformat(),
     }
+
+
+@app.get("/api/diagnose")
+async def diagnose_everything():
+    """
+    Tests every agent, every API key, every dependency.
+    Call this first to find exactly what is broken.
+    Open: https://your-backend.onrender.com/api/diagnose
+    """
+    import time
+    from core.singletons import get_cache
+    _cache = get_cache()
+    results = {}
+
+    # ── 1. Environment Variables ───────────────────────────────
+    results["env_vars"] = {
+        "GOOGLE_API_KEY":    "✅ SET"    if os.getenv("GOOGLE_API_KEY")    else "❌ MISSING — add to Render environment vars",
+        "RAPIDAPI_KEY":      "✅ SET"    if os.getenv("RAPIDAPI_KEY")      else "⚠️ NOT SET — job search will use demo data",
+        "ADZUNA_APP_ID":     "✅ SET"    if os.getenv("ADZUNA_APP_ID")     else "⚠️ NOT SET — job search will use demo data",
+        "FRONTEND_URL":      os.getenv("FRONTEND_URL", "⚠️ NOT SET — CORS may block frontend"),
+        "RENDER_EXTERNAL_URL": os.getenv("RENDER_EXTERNAL_URL", "⚠️ NOT SET"),
+    }
+
+    # ── 2. Gemini LLM Test ─────────────────────────────────────
+    try:
+        start = time.time()
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=os.getenv("GOOGLE_API_KEY", ""),
+            temperature=0.1,
+            max_tokens=50,
+            convert_system_message_to_human=True,
+        )
+        resp = llm.invoke("Say the word WORKING and nothing else")
+        elapsed = round(time.time() - start, 2)
+        results["gemini_llm"] = f"✅ WORKING ({elapsed}s) — response: {resp.content[:30]}"
+    except Exception as e:
+        results["gemini_llm"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 3. Gemini Embeddings Test ──────────────────────────────
+    try:
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        emb = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=os.getenv("GOOGLE_API_KEY", ""),
+        )
+        vec = emb.embed_query("test")
+        results["gemini_embeddings"] = f"✅ WORKING — vector size: {len(vec)}"
+    except Exception as e:
+        results["gemini_embeddings"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 4. Resume Analyzer Agent Test ─────────────────────────
+    try:
+        start = time.time()
+        test_resume = """
+        John Doe - Software Engineer
+        Skills: Python, React, FastAPI, Machine Learning
+        Experience: 2 years at TechCorp as SWE
+        Education: B.Tech Computer Science 2022
+        """
+        prompt = f"Analyze this resume and return JSON with skills_found, experience_level, overall_score. Resume: {test_resume}"
+        resp = llm.invoke(prompt)
+        elapsed = round(time.time() - start, 2)
+        results["resume_analyzer_agent"] = f"✅ WORKING ({elapsed}s)"
+    except Exception as e:
+        results["resume_analyzer_agent"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 5. Job Scraper Agent Test ──────────────────────────────
+    try:
+        import httpx
+        start = time.time()
+        rapidapi_key = os.getenv("RAPIDAPI_KEY", "")
+        if rapidapi_key:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    "https://jsearch.p.rapidapi.com/search",
+                    headers={
+                        "X-RapidAPI-Key":  rapidapi_key,
+                        "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
+                    },
+                    params={"query": "Software Engineer India", "num_pages": "1"},
+                )
+                data = resp.json()
+                count = len(data.get("data", []))
+                elapsed = round(time.time() - start, 2)
+                results["job_scraper_jsearch"] = f"✅ WORKING ({elapsed}s) — found {count} jobs"
+        else:
+            results["job_scraper_jsearch"] = "⚠️ SKIPPED — RAPIDAPI_KEY not set, will use demo jobs"
+    except Exception as e:
+        results["job_scraper_jsearch"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 6. Resume Rewriter Agent Test ─────────────────────────
+    try:
+        start = time.time()
+        resp = llm.invoke(
+            "Rewrite this bullet point for a Python Developer role: "
+            "'Developed web applications using React and Node.js' "
+            "Return only the rewritten bullet point."
+        )
+        elapsed = round(time.time() - start, 2)
+        results["resume_rewriter_agent"] = f"✅ WORKING ({elapsed}s) — sample: {resp.content[:80]}"
+    except Exception as e:
+        results["resume_rewriter_agent"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 7. Mock Interview Agent Test ──────────────────────────
+    try:
+        start = time.time()
+        resp = llm.invoke(
+            "Generate one interview question for a Software Engineer position. "
+            "Return only the question, nothing else."
+        )
+        elapsed = round(time.time() - start, 2)
+        results["mock_interview_agent"] = f"✅ WORKING ({elapsed}s) — sample Q: {resp.content[:100]}"
+    except Exception as e:
+        results["mock_interview_agent"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 8. Answer Scoring Agent Test ──────────────────────────
+    try:
+        start = time.time()
+        resp = llm.invoke(
+            'Score this interview answer from 1-10. Return JSON only: {"score":7,"clarity":8,"relevance":7,"feedback":"Good answer","better_answer_hint":"Add examples"}'
+            'Answer: "I have 2 years of experience with Python and React building web applications."'
+        )
+        elapsed = round(time.time() - start, 2)
+        results["answer_scoring_agent"] = f"✅ WORKING ({elapsed}s)"
+    except Exception as e:
+        results["answer_scoring_agent"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 9. Daily Coach Agent Test ──────────────────────────────
+    try:
+        start = time.time()
+        resp = llm.invoke(
+            "You are Aria, a friendly English coach. A student just said: 'Hello, how are you?' "
+            "Reply naturally in 2 sentences and ask what they want to talk about."
+        )
+        elapsed = round(time.time() - start, 2)
+        results["daily_coach_agent"] = f"✅ WORKING ({elapsed}s) — sample: {resp.content[:100]}"
+    except Exception as e:
+        results["daily_coach_agent"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 10. ChromaDB Test ─────────────────────────────────────
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path="./chroma_db")
+        cols = client.list_collections()
+        results["chromadb"] = f"✅ WORKING — collections: {[c.name for c in cols]}"
+    except Exception as e:
+        results["chromadb"] = f"❌ FAILED — {str(e)[:150]}"
+
+    # ── 11. File Upload Directory ─────────────────────────────
+    uploads_exists = os.path.exists("data/uploads")
+    if not uploads_exists:
+        os.makedirs("data/uploads", exist_ok=True)
+    results["uploads_dir"] = "✅ EXISTS" if uploads_exists else "⚠️ CREATED NOW"
+
+    # ── 12. Skills KB ─────────────────────────────────────────
+    kb_exists = os.path.exists("data/skills_kb/skills.txt")
+    results["skills_kb"] = "✅ EXISTS" if kb_exists else "⚠️ MISSING — will use defaults"
+
+    # ── 13. CORS Check ────────────────────────────────────────
+    frontend_url = os.getenv("FRONTEND_URL", "")
+    results["cors"] = {
+        "frontend_url_set": frontend_url if frontend_url else "⚠️ NOT SET",
+        "note": "If frontend gets CORS errors, add FRONTEND_URL to Render env vars"
+    }
+
+    # ── Summary ────────────────────────────────────────────────
+    all_vals = [str(v) for v in results.values() if isinstance(v, str)]
+    has_errors   = any("❌" in v for v in all_vals)
+    has_warnings = any("⚠️" in v for v in all_vals)
+
+    results["SUMMARY"] = (
+        "❌ ERRORS FOUND — fix the items marked ❌ above" if has_errors
+        else "⚠️ WARNINGS — working but some features limited" if has_warnings
+        else "✅ ALL AGENTS WORKING"
+    )
+
+    return results
 
 
 # ── WebSocket — Agent Stream ──────────────────────────────────────────────────

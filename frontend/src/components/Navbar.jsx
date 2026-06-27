@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
-import { LayoutDashboard, FileUp, Briefcase, FileEdit, Mic, Menu, X, Flame, LogOut, User, Award, ShieldCheck, Star, Sparkles } from 'lucide-react'
+import { LayoutDashboard, FileUp, Briefcase, FileEdit, Mic, Menu, X, Flame, LogOut, User, Award, ShieldCheck, Star, Sparkles, Activity } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import useAuthStore from '../store/useAuthStore'
 import useStore from '../store/useStore'
@@ -20,6 +20,7 @@ const navLinks = [
   { to: '/rewrite', label: 'Rewrite', icon: FileEdit },
   { to: '/interview', label: 'Interview', icon: Mic },
   { to: '/daily-coach', label: 'Daily Coach', icon: Flame, isDailyCoach: true },
+  { to: '/status', label: 'Agent Status', icon: Activity },
 ]
 
 export default function Navbar() {
