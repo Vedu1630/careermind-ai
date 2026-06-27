@@ -5,20 +5,13 @@ const pendingRequests = new Map()
 
 // Determine backend URL
 const getBaseURL = () => {
-  // If env var set, use it
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  // In production (not localhost), try same origin
   if (window.location.hostname !== "localhost" &&
       window.location.hostname !== "127.0.0.1") {
-    // If it's a Vercel deployment, use Vercel rewrite proxy to the Render backend
-    if (window.location.hostname.endsWith(".vercel.app")) {
-      return "/api";
-    }
-    return window.location.origin.replace(/:\d+$/, "") + ":8000";
+    return "/api";
   }
-  // Local dev
   return "http://localhost:8000";
 };
 
