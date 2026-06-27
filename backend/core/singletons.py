@@ -26,7 +26,7 @@ print("⚡ Initializing singletons...")
 
 # ── LLM (one instance, reused everywhere) ─────────────────────────
 _llm_fast = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     google_api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0.1,          # lower = faster, more deterministic
     max_tokens=800,           # cap output tokens for speed
@@ -34,7 +34,7 @@ _llm_fast = ChatGoogleGenerativeAI(
 )
 
 _llm_quality = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     google_api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0.3,
     max_tokens=2000,          # for rewriting tasks that need more output

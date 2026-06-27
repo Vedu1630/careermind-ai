@@ -3,28 +3,39 @@ import axios from 'axios'
 // Request deduplication — cancel duplicate in-flight requests
 const pendingRequests = new Map()
 
-// Determine backend URL
 const getBaseURL = () => {
-  if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+  // 1. Explicit env var — highest priority
+  const envURL = import.meta.env.VITE_API_URL;
+  if (envURL && envURL !== "undefined" && envURL !== "") {
+    let url = envURL.replace(/\/$/, ""); // strip trailing slash
+    if (!url.endsWith("/api")) {
+      url += "/api";
+    }
+    return url;
   }
-  if (window.location.hostname !== "localhost" &&
-      window.location.hostname !== "127.0.0.1") {
-    return "/api";
+
+  // 2. If running on Vercel/Render production — use deployed backend
+  const host = window.location.hostname;
+  if (host !== "localhost" && host !== "127.0.0.1") {
+    console.warn("⚠️ VITE_API_URL not set. Set it to your backend URL in Vercel environment variables.");
+    return "http://localhost:8000/api"; // Will fail in prod — forces user to set env var
   }
-  return "http://localhost:8000";
+
+  // 3. Local development default
+  return "http://localhost:8000/api";
 };
 
-// ── Axios instance ─────────────────────────────────────────────────────────
-const api = axios.create({
-  baseURL: getBaseURL(),
-  timeout: 180000, // 180s (3m) for AI processing
-  headers: { 'Content-Type': 'application/json' },
-})
+const BASE_URL = getBaseURL();
+console.log("🔗 API connecting to:", BASE_URL);
 
-// Log every request for debugging, inject auth token, and handle request deduplication
+const api = axios.create({
+  baseURL: BASE_URL,
+  timeout: 180000,
+  headers: { "Content-Type": "application/json" },
+});
+
 api.interceptors.request.use((config) => {
-  console.log(`🌐 API ${config.method?.toUpperCase()} ${config.baseURL || ''}${config.url}`);
+  console.log(`→ ${config.method?.toUpperCase()} ${config.url}`);
   
   const token = localStorage.getItem('careermind_token')
   if (token) {
@@ -43,14 +54,13 @@ api.interceptors.request.use((config) => {
   pendingRequests.set(key, controller)
 
   return config
-})
+});
 
-// Response interceptor to handle errors clearly, handle 401 Unauthorized, and clean up pending requests
 api.interceptors.response.use(
-  (response) => {
-    const key = `${response.config.method}:${response.config.url}:${JSON.stringify(response.config.params || {})}`
+  (res) => {
+    const key = `${res.config.method}:${res.config.url}:${JSON.stringify(res.config.params || {})}`
     pendingRequests.delete(key)
-    return response
+    return res;
   },
   async (error) => {
     if (error.config) {
@@ -63,22 +73,26 @@ api.interceptors.response.use(
       return Promise.reject(error)
     }
 
-    // Handle errors clearly
-    if (error.code === "ERR_NETWORK" || error.message === "Network Error") {
-      console.error("❌ Cannot reach backend. Is it running?");
-      error.userMessage = "Cannot connect to server. Make sure the backend is running.";
-    } else if (error.response?.status === 502) {
-      console.error("❌ 502 Bad Gateway — backend crashed or not running");
-      error.userMessage = "Server error (502). The backend may have crashed.";
-    } else if (error.response?.status === 503) {
-      error.userMessage = error.response.data?.detail || "Service temporarily unavailable.";
+    const status = error.response?.status;
+    const url    = error.config?.url;
+
+    if (!error.response) {
+      console.error(`❌ Network error on ${url} — backend not reachable at ${BASE_URL}`);
+      error.userMessage = `Cannot reach backend at ${BASE_URL}. Is it running?`;
+    } else if (status === 502) {
+      console.error(`❌ 502 on ${url} — backend crashed or restarting`);
+      error.userMessage = "Server error (502). Backend may be restarting.";
+    } else if (status === 503) {
+      error.userMessage = error.response.data?.detail || "Service unavailable.";
+    } else if (status === 404) {
+      error.userMessage = `Endpoint not found: ${url}`;
+    } else if (status === 422) {
+      error.userMessage = error.response.data?.detail || "Invalid request data.";
     }
 
     const originalRequest = error.config
-    
-    // Guard against undefined config/response and prevent recursive authentication loops on /auth/token
     const isAuthPath = originalRequest && originalRequest.url && originalRequest.url.includes('/auth/token')
-    
+
     if (
       error.response && 
       error.response.status === 401 && 
@@ -87,26 +101,20 @@ api.interceptors.response.use(
       !isAuthPath
     ) {
       originalRequest._retry = true
-      
-      // Clear the invalid token from localStorage
       localStorage.removeItem('careermind_token')
       localStorage.removeItem('careermind_user_id')
-      
       try {
-        // Fetch a fresh token
         const { token } = await getOrCreateToken()
-        
-        // Update the header of the original request and retry it
         originalRequest.headers = originalRequest.headers || {}
         originalRequest.headers.Authorization = `Bearer ${token}`
         return api(originalRequest)
       } catch (tokenError) {
         console.error("Failed to refresh auth token:", tokenError)
-        return Promise.reject(error) // Always reject to prevent returning undefined and crashing React
+        return Promise.reject(error)
       }
     }
-    
-    return Promise.reject(error) // Always reject to prevent returning undefined and crashing React
+
+    return Promise.reject(error);
   }
 )
 

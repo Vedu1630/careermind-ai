@@ -88,7 +88,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex="https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -477,35 +477,71 @@ async def rewrite_resume_endpoint(
 
 
 
-from fastapi.responses import StreamingResponse
-from tools.pdf_tool import pdf_handler
-import io
-
 @app.post("/api/rewrite/download-pdf")
 async def download_rewritten_pdf(request: dict):
-    """
-    Takes original resume path + rewritten text.
-    Returns a PDF file that looks identical to original but with rewritten content.
-    """
-    resume_path = request["resume_path"]
-    original_text = request["original_text"]
-    rewritten_text = request["rewritten_text"]
+    import os
+    import io
+    from fastapi import HTTPException
+    from fastapi.responses import StreamingResponse
     
-    # Rebuild PDF preserving all formatting
-    pdf_bytes = pdf_handler.rebuild_pdf_with_rewritten_text(
-        original_path=resume_path,
-        original_text=original_text,
-        rewritten_text=rewritten_text
-    )
-    
-    return StreamingResponse(
-        io.BytesIO(pdf_bytes),
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": "attachment; filename=rewritten_resume.pdf",
-            "Content-Type": "application/pdf"
-        }
-    )
+    resume_path    = request.get("resume_path", "")
+    rewritten_text = request.get("rewritten_text", "")
+    original_text  = request.get("original_text", "")
+    pdf_path       = request.get("rewritten_pdf_path", "")
+
+    # If we have a pre-built PDF from rewrite, serve it directly
+    if pdf_path and os.path.exists(pdf_path):
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="rewritten_resume.pdf"'}
+        )
+
+    # Rebuild on demand
+    if resume_path and os.path.exists(resume_path) and rewritten_text:
+        try:
+            from tools.pdf_tool import pdf_handler
+            pdf_bytes = pdf_handler.rebuild_pdf_with_rewritten_text(
+                original_path=resume_path,
+                original_text=original_text or pdf_handler.extract_text_for_ai(resume_path),
+                rewritten_text=rewritten_text,
+            )
+            return StreamingResponse(
+                io.BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={"Content-Disposition": 'attachment; filename="rewritten_resume.pdf"'}
+            )
+        except Exception as e:
+            print(f"PDF rebuild failed: {e}")
+
+    # Fallback: wrap rewritten text in simple PDF
+    try:
+        from reportlab.pdfgen import canvas as rl
+        from reportlab.lib.pagesizes import A4
+        buf = io.BytesIO()
+        c   = rl.Canvas(buf, pagesize=A4)
+        w, h = A4
+        c.setFont("Helvetica", 10)
+        y = h - 50
+        for line in (rewritten_text or "No content").split("\n"):
+            line = line[:110]  # prevent overflow
+            if y < 50:
+                c.showPage()
+                c.setFont("Helvetica", 10)
+                y = h - 50
+            c.drawString(40, y, line)
+            y -= 13
+        c.save()
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="rewritten_resume.pdf"'}
+        )
+    except Exception as e:
+        raise HTTPException(500, f"PDF generation failed: {str(e)}")
 
 
 @app.post("/api/score-pdf")

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import useAuthStore from "./store/useAuthStore";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
@@ -12,17 +12,28 @@ import DailyCoach from "./pages/DailyCoach";
 import Navbar from "./components/Navbar";
 import { useAgentStream } from "./hooks/useAgentStream";
 import api from "./lib/api";
+import axios from "axios";
 
 function BackendStatus() {
   const [status, setStatus] = useState("checking");
+  const [backendURL, setBackendURL] = useState("");
 
   useEffect(() => {
+    const url = import.meta.env.VITE_API_URL || "http://localhost:8000";
+    setBackendURL(url);
+
     const check = async () => {
       try {
-        const res = await api.get("/health", { timeout: 5000 });
-        const data = res.data;
-        if (data.status === "healthy" || data.status === "ok" || data.gemini_test?.includes("✅")) {
+        let checkUrl = url.replace(/\/$/, "");
+        if (!checkUrl.endsWith("/api")) {
+          checkUrl += "/api";
+        }
+        const res = await axios.get(`${checkUrl}/health`, { timeout: 4000 });
+        const statusVal = res.data?.status;
+        if (statusVal === "healthy" || statusVal === "ok" || res.data?.gemini_test?.includes("✅")) {
           setStatus("ok");
+        } else if (statusVal === "online") {
+          setStatus("partial");
         } else {
           setStatus("partial");
         }
@@ -30,25 +41,38 @@ function BackendStatus() {
         setStatus("down");
       }
     };
+
     check();
-    const interval = setInterval(check, 30000);
+    const interval = setInterval(check, 20000);
     return () => clearInterval(interval);
   }, []);
 
-  if (status === "ok") return null; // don't show when everything is fine
+  if (status === "ok") return null;
 
   return (
-    <div className={`fixed top-0 left-0 right-0 z-[100] py-2 px-4 text-center text-sm font-medium ${
-      status === "down"
-        ? "bg-red-50 border-b border-red-200 text-red-600"
-        : status === "partial"
-          ? "bg-amber-50 border-b border-amber-200 text-amber-600"
-          : "bg-[#F0EEFF] border-b border-[#E8E4FF] text-[#6B5CE7]"
-    }`}>
-      {status === "down" && "⚠️ Backend server is not reachable. Start it with: cd backend && uvicorn main:app --reload --port 8000"}
-      {status === "partial" && "⚠️ Backend running but Gemini API key may be missing. Check your .env file."}
-      {status === "checking" && "Connecting to server..."}
-    </div>
+    <motion.div
+      initial={{ opacity: 0, y: -20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`w-full py-2 px-4 text-center text-xs font-medium z-[200] ${
+        status === "down"
+          ? "bg-red-50 border-b border-red-200 text-red-600"
+          : status === "partial"
+            ? "bg-amber-50 border-b border-amber-200 text-amber-700"
+            : "bg-[#F0EEFF] border-b border-[#E8E4FF] text-[#6B5CE7]"
+      }`}
+    >
+      {status === "down" && (
+        <>
+          ⚠️ Backend not reachable at <code className="font-mono bg-red-100 px-1 rounded">{backendURL}</code>
+          {backendURL.includes("localhost")
+            ? " — Run: cd backend && uvicorn main:app --reload --port 8000"
+            : " — Check VITE_API_URL in your Vercel/Render environment settings"
+          }
+        </>
+      )}
+      {status === "partial" && "⚠️ Backend running but Gemini API key missing. Add GOOGLE_API_KEY to backend/.env"}
+      {status === "checking" && "Connecting to backend..."}
+    </motion.div>
   );
 }
 
