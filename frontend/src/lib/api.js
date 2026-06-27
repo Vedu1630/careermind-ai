@@ -6,7 +6,7 @@ const pendingRequests = new Map()
 // ── Axios instance ─────────────────────────────────────────────────────────
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000, // 30s timeout — prevents hanging forever
+  timeout: 180000, // 180s (3m) for AI processing
   headers: { 'Content-Type': 'application/json' },
 })
 
