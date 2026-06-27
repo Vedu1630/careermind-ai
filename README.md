@@ -121,6 +121,31 @@ CareerMind AI is a **production-grade, multi-agent AI career coach platform** bu
 
 ## 🚀 Local Development
 
+### Quick Start
+
+```bash
+# Terminal 1 — Backend
+cd backend
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env            # then add GOOGLE_API_KEY
+uvicorn main:app --reload --port 8000
+
+# Terminal 2 — Frontend
+cd frontend
+npm install
+npm run dev
+
+# Verify backend is working:
+# Open browser → http://localhost:8000/health
+# Should show all ✅ green
+
+# Verify frontend API connection:
+# Open browser console → Network tab
+# All /api/ calls should return 200, not 502
+```
+
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
@@ -170,6 +195,7 @@ The frontend will be at `http://localhost:3000`
 
 ### 4. Verify
 Open `http://localhost:3000` in your browser. The agent panel should show "Connected" (green dot).
+
 
 ---
 

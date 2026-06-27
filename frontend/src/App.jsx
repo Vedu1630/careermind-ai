@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
 import useAuthStore from "./store/useAuthStore";
@@ -11,6 +11,46 @@ import MockInterview from "./pages/MockInterview";
 import DailyCoach from "./pages/DailyCoach";
 import Navbar from "./components/Navbar";
 import { useAgentStream } from "./hooks/useAgentStream";
+import api from "./lib/api";
+
+function BackendStatus() {
+  const [status, setStatus] = useState("checking");
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await api.get("/health", { timeout: 5000 });
+        const data = res.data;
+        if (data.status === "healthy" || data.status === "ok" || data.gemini_test?.includes("✅")) {
+          setStatus("ok");
+        } else {
+          setStatus("partial");
+        }
+      } catch {
+        setStatus("down");
+      }
+    };
+    check();
+    const interval = setInterval(check, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (status === "ok") return null; // don't show when everything is fine
+
+  return (
+    <div className={`fixed top-0 left-0 right-0 z-[100] py-2 px-4 text-center text-sm font-medium ${
+      status === "down"
+        ? "bg-red-50 border-b border-red-200 text-red-600"
+        : status === "partial"
+          ? "bg-amber-50 border-b border-amber-200 text-amber-600"
+          : "bg-[#F0EEFF] border-b border-[#E8E4FF] text-[#6B5CE7]"
+    }`}>
+      {status === "down" && "⚠️ Backend server is not reachable. Start it with: cd backend && uvicorn main:app --reload --port 8000"}
+      {status === "partial" && "⚠️ Backend running but Gemini API key may be missing. Check your .env file."}
+      {status === "checking" && "Connecting to server..."}
+    </div>
+  );
+}
 
 function Loader() {
   return (
@@ -85,6 +125,7 @@ export default function App() {
 
   return (
     <BrowserRouter>
+      <BackendStatus />
       <AppContent />
     </BrowserRouter>
   );

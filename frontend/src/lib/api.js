@@ -3,15 +3,36 @@ import axios from 'axios'
 // Request deduplication — cancel duplicate in-flight requests
 const pendingRequests = new Map()
 
+// Determine backend URL
+const getBaseURL = () => {
+  // If env var set, use it
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  // In production (not localhost), try same origin
+  if (window.location.hostname !== "localhost" &&
+      window.location.hostname !== "127.0.0.1") {
+    // If it's a Vercel deployment, use Vercel rewrite proxy to the Render backend
+    if (window.location.hostname.endsWith(".vercel.app")) {
+      return "/api";
+    }
+    return window.location.origin.replace(/:\d+$/, "") + ":8000";
+  }
+  // Local dev
+  return "http://localhost:8000";
+};
+
 // ── Axios instance ─────────────────────────────────────────────────────────
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: getBaseURL(),
   timeout: 180000, // 180s (3m) for AI processing
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Auth token injection and request deduplication
+// Log every request for debugging, inject auth token, and handle request deduplication
 api.interceptors.request.use((config) => {
+  console.log(`🌐 API ${config.method?.toUpperCase()} ${config.baseURL || ''}${config.url}`);
+  
   const token = localStorage.getItem('careermind_token')
   if (token) {
     config.headers = config.headers || {}
@@ -31,7 +52,7 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// Response interceptor to handle 401 Unauthorized (expired or invalid JWTs) and clean up pending requests
+// Response interceptor to handle errors clearly, handle 401 Unauthorized, and clean up pending requests
 api.interceptors.response.use(
   (response) => {
     const key = `${response.config.method}:${response.config.url}:${JSON.stringify(response.config.params || {})}`
@@ -39,15 +60,25 @@ api.interceptors.response.use(
     return response
   },
   async (error) => {
-    // If it's a cancelled request, handle it gracefully
+    if (error.config) {
+      const key = `${error.config.method}:${error.config.url}:${JSON.stringify(error.config.params || {})}`
+      pendingRequests.delete(key)
+    }
+
     if (axios.isCancel(error)) {
       console.log("Duplicate request cancelled")
       return Promise.reject(error)
     }
 
-    if (error.config) {
-      const key = `${error.config.method}:${error.config.url}:${JSON.stringify(error.config.params || {})}`
-      pendingRequests.delete(key)
+    // Handle errors clearly
+    if (error.code === "ERR_NETWORK" || error.message === "Network Error") {
+      console.error("❌ Cannot reach backend. Is it running?");
+      error.userMessage = "Cannot connect to server. Make sure the backend is running.";
+    } else if (error.response?.status === 502) {
+      console.error("❌ 502 Bad Gateway — backend crashed or not running");
+      error.userMessage = "Server error (502). The backend may have crashed.";
+    } else if (error.response?.status === 503) {
+      error.userMessage = error.response.data?.detail || "Service temporarily unavailable.";
     }
 
     const originalRequest = error.config
