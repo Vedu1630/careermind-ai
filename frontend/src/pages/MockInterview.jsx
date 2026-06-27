@@ -151,6 +151,7 @@ export default function MockInterview() {
   const [scoreCard, setScoreCard]           = useState(null);
   const [aiState, setAiState]               = useState("idle");
   const [isMuted, setIsMuted]               = useState(false);
+  const [fetchError, setFetchError]         = useState(null);
 
   // Follow-up states
   const [isFollowUp, setIsFollowUp]         = useState(false);
@@ -340,6 +341,7 @@ export default function MockInterview() {
   const fetchNextQuestion = useCallback(async (currentHistory) => {
     setAiState("thinking");
     setScoreCard(null);
+    setFetchError(null);
 
     // CRITICAL: reset recorder and filler states for new question
     resetRecording();
@@ -358,6 +360,9 @@ export default function MockInterview() {
       });
 
       const newQuestion = res.data.question;
+      if (!newQuestion) {
+        throw new Error("Received empty question from AI.");
+      }
       setQuestion(newQuestion);
       setRound(currentHistory.length + 1);
 
@@ -382,9 +387,11 @@ export default function MockInterview() {
       }
     } catch (err) {
       console.error("Failed to fetch question:", err);
-      setAiState("listening"); // Even on error, show the mic
+      const errMsg = err.response?.data?.detail || err.userMessage || err.message || "Failed to connect to backend.";
+      setFetchError(errMsg);
+      setAiState("idle");
     }
-  }, [selectedJob, isMuted, selectedVoice, speak, resetRecording, interviewType, targetCompany, targetLevel]);
+  }, [selectedJob, isMuted, selectedVoice, speak, resetRecording, interviewType, targetCompany, targetLevel, getEffectiveJobTitle]);
 
   // ── Start interview ────────────────────────────────────────────────
   const startInterview = async () => {
@@ -1270,6 +1277,23 @@ export default function MockInterview() {
           </button>
         )}
       </motion.div>
+
+      {/* Error Card */}
+      {fetchError && (
+        <div className="p-5 bg-red-50 border border-red-200 rounded-2xl mb-5 text-center">
+          <div className="flex items-center justify-center gap-2 text-red-600 mb-3 font-semibold">
+            <AlertCircle className="w-5 h-5" />
+            <span>Failed to load interview question</span>
+          </div>
+          <p className="text-sm text-red-600 mb-4">{fetchError}</p>
+          <button
+            onClick={() => fetchNextQuestion(history.filter(h => !h.isFollowUp))}
+            className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-colors"
+          >
+            Retry Fetch Question 🔄
+          </button>
+        </div>
+      )}
 
       {/* Question Card */}
       <AnimatePresence mode="wait">
