@@ -35,6 +35,9 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  if (config.url && config.url.startsWith('/') && !config.url.startsWith('/api')) {
+    config.url = `/api${config.url}`;
+  }
   console.log(`→ ${config.method?.toUpperCase()} ${config.url}`);
   
   const token = localStorage.getItem('careermind_token')
