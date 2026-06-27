@@ -9,6 +9,7 @@ import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from contextlib import asynccontextmanager
 
 from fastapi import (
     FastAPI, File, Form, HTTPException, Query, UploadFile,
@@ -22,12 +23,53 @@ from pydantic import BaseModel
 import config as cfg
 from db import init_db, get_session, upsert_session
 
+from core.singletons import (
+    get_llm, get_whisper, get_http_client, _init_skills_vectorstore, get_cache
+)
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# ── Lifespan context manager ──────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🚀 CareerMind AI starting up...")
+    try:
+        await init_db()
+    except Exception as e:
+        logger.error("Failed to initialize database: %s", e)
+    
+    logger.info("⚡ Pre-warming LLMs...")
+    try:
+        get_llm()
+        get_llm(quality=True)
+    except Exception as e:
+        logger.warning("LLM pre-warming failed: %s", e)
+        
+    logger.info("⚡ Pre-warming ChromaDB skills vectorstore...")
+    try:
+        _init_skills_vectorstore()
+    except Exception as e:
+        logger.warning("ChromaDB pre-warming failed: %s", e)
+        
+    logger.info("⚡ Pre-warming Whisper...")
+    try:
+        get_whisper()
+    except Exception as e:
+        logger.warning("Whisper pre-warming failed: %s", e)
+        
+    logger.info("✅ All systems ready — CareerMind AI is live!")
+    yield
+    # Shutdown
+    try:
+        await get_http_client().aclose()
+    except Exception:
+        pass
+    logger.info("👋 CareerMind AI shut down cleanly")
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -36,7 +78,12 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan
 )
+
+# Add response compression middleware
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -149,19 +196,6 @@ class AuthRequest(BaseModel):
 
 
 # ── Startup / Shutdown ─────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup():
-    logger.info("CareerMind AI starting up...")
-    await init_db()
-
-    # Initialize ChromaDB skills store (builds vector index on first run)
-    from tools.chromadb_tool import skills_store
-    try:
-        skills_store.build()
-    except Exception as e:
-        logger.warning("SkillsVectorStore build failed (non-fatal): %s", e)
-
-    logger.info("CareerMind AI ready!")
 
 
 # ── Auth endpoint ──────────────────────────────────────────────────────────────
@@ -213,8 +247,9 @@ async def analyze_resume_endpoint(
     current_user: str = Depends(get_current_user),
 ):
     """Run resume analyzer. Returns full analysis dict."""
-    from agents.resume_analyzer import analyze_resume, calculate_real_ats_score, calculate_overall_score
+    from agents.resume_analyzer import analyze_resume, calculate_real_ats_score, calculate_overall_score, extract_pdf_text
     from tools.pdf_tool import pdf_handler
+    from core.singletons import get_cache
 
     user_id = body.user_id or current_user
 
@@ -240,8 +275,8 @@ async def analyze_resume_endpoint(
         "timestamp": datetime.utcnow().isoformat(),
     })
 
-    # ALWAYS extract fresh text directly from the PDF file
-    fresh_text = pdf_handler.extract_text_for_ai(body.file_path)
+    # ALWAYS extract text using optimized cached extraction
+    fresh_text = extract_pdf_text(body.file_path)
 
     if not fresh_text or len(fresh_text) < 100:
         raise HTTPException(
@@ -272,6 +307,9 @@ async def analyze_resume_endpoint(
         "ats": ats_result,  # For backward compatibility
     }
 
+    # Cache for this user so job scraper can use it
+    get_cache()[f"latest_analysis:{user_id}"] = result
+
     # Save to SQLite
     await upsert_session(
         user_id,
@@ -299,12 +337,21 @@ async def get_jobs(
     user_id: str = Query(default=""),
     current_user: str = Depends(get_current_user),
 ):
-    """Scrape and score job listings."""
+    """Scrape and score job listings using optimized parallel async scraper."""
     from agents.job_scraper import scrape_and_score
+    from core.singletons import get_cache
 
     effective_user = user_id or current_user
-    session = await get_session(effective_user)
-    resume_analysis = session.get("resume_analysis") if session else {}
+
+    # Try memory cache first, else get from DB session
+    cache = get_cache()
+    cache_key_analysis = f"latest_analysis:{effective_user}"
+    resume_analysis = cache.get(cache_key_analysis)
+    
+    if not resume_analysis:
+        session = await get_session(effective_user)
+        resume_analysis = session.get("resume_analysis") if session else {}
+    
     if not resume_analysis:
         resume_analysis = {"skills_found": [], "experience_level": "junior"}
 
@@ -326,6 +373,7 @@ async def get_jobs(
         "timestamp": datetime.utcnow().isoformat(),
     })
 
+    # Run the optimized parallel async scraper
     jobs = await scrape_and_score(
         query=q,
         location=location,
@@ -353,7 +401,7 @@ async def rewrite_resume_endpoint(
 ):
     """Rewrite resume for a specific job."""
     from agents.resume_rewriter import rewrite_resume
-    from agents.resume_analyzer import calculate_real_ats_score
+    from agents.resume_analyzer import calculate_real_ats_score, extract_pdf_text
     from tools.pdf_tool import pdf_handler
 
     user_id = body.user_id or current_user
@@ -367,8 +415,8 @@ async def rewrite_resume_endpoint(
     if not resume_path or not os.path.exists(resume_path):
         raise HTTPException(status_code=404, detail="Resume file not found")
 
-    # Extract original text fresh from the PDF
-    original_text = pdf_handler.extract_text_for_ai(resume_path)
+    # Extract original text cached from the PDF
+    original_text = extract_pdf_text(resume_path)
 
     # Score the ORIGINAL from its actual text
     job_description = body.job.get("description", "")
@@ -392,6 +440,7 @@ async def rewrite_resume_endpoint(
         "timestamp": datetime.utcnow().isoformat(),
     })
 
+    # Call the optimized async rewrite_resume function
     result = await rewrite_resume(resume_path, body.job, progress_callback=sync_callback)
 
     rewritten_text = result["rewritten_text"]

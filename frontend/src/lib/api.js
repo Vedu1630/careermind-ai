@@ -1,26 +1,55 @@
 import axios from 'axios'
 
+// Request deduplication — cancel duplicate in-flight requests
+const pendingRequests = new Map()
+
 // ── Axios instance ─────────────────────────────────────────────────────────
 const api = axios.create({
   baseURL: '/api',
-  timeout: 180000, // 180s (3m) for AI processing
+  timeout: 30000, // 30s timeout — prevents hanging forever
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Auth token injection
+// Auth token injection and request deduplication
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('careermind_token')
   if (token) {
     config.headers = config.headers || {}
     config.headers.Authorization = `Bearer ${token}`
   }
+
+  // Deduplication logic
+  const key = `${config.method}:${config.url}:${JSON.stringify(config.params || {})}`
+  if (pendingRequests.has(key)) {
+    pendingRequests.get(key).abort()
+  }
+
+  const controller = new AbortController()
+  config.signal = controller.signal
+  pendingRequests.set(key, controller)
+
   return config
 })
 
-// Response interceptor to handle 401 Unauthorized (expired or invalid JWTs)
+// Response interceptor to handle 401 Unauthorized (expired or invalid JWTs) and clean up pending requests
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const key = `${response.config.method}:${response.config.url}:${JSON.stringify(response.config.params || {})}`
+    pendingRequests.delete(key)
+    return response
+  },
   async (error) => {
+    // If it's a cancelled request, handle it gracefully
+    if (axios.isCancel(error)) {
+      console.log("Duplicate request cancelled")
+      return Promise.reject(error)
+    }
+
+    if (error.config) {
+      const key = `${error.config.method}:${error.config.url}:${JSON.stringify(error.config.params || {})}`
+      pendingRequests.delete(key)
+    }
+
     const originalRequest = error.config
     
     // Guard against undefined config/response and prevent recursive authentication loops on /auth/token
