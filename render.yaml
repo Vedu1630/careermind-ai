@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: careermind-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: RENDER_EXTERNAL_URL
+        sync: false
+      - key: LANGCHAIN_TRACING_V2
+        value: "false"
+      - key: PYTHONUNBUFFERED
+        value: "1"
