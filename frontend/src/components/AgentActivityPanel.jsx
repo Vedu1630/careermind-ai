@@ -51,8 +51,22 @@ function AgentEventItem({ event, index }) {
 
 export default function AgentActivityPanel() {
   const [collapsed, setCollapsed] = useState(true)
+  const [provider, setProvider] = useState("gemini")
   const { events, isConnected, clearEvents } = useAgentStream()
   const bottomRef = useRef(null)
+
+  // Fetch active provider
+  useEffect(() => {
+    const apiurl = import.meta.env.VITE_API_URL || "";
+    fetch(`${apiurl}/api/health`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.llm_provider) {
+          setProvider(d.llm_provider);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Auto-scroll to newest event
   useEffect(() => {
@@ -94,13 +108,20 @@ export default function AgentActivityPanel() {
           >
             {/* Header */}
             <div className="px-4 py-3 border-b border-[#E8E4FF] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-lg flex items-center justify-center bg-gradient-to-br from-[#6B5CE7] to-[#8B7CF8]">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <div className="w-6 h-6 rounded-lg flex items-center justify-center bg-gradient-to-br from-[#6B5CE7] to-[#8B7CF8] flex-shrink-0">
                   <Brain size={12} className="text-white" />
                 </div>
-                <span className="text-sm font-bold text-[#111]">Agent Activity</span>
+                <span className="text-sm font-bold text-[#111] truncate">Agent Activity</span>
+                <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                  provider === "groq"
+                    ? "bg-amber-100 text-amber-800 border border-amber-200"
+                    : "bg-emerald-100 text-emerald-800 border border-emerald-200"
+                }`}>
+                  {provider === "groq" ? "⚡ Groq" : "✨ Gemini"}
+                </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 {/* Connection indicator */}
                 <div className={`flex items-center gap-1 text-xs ${isConnected ? 'text-[#22C55E]' : 'text-[#888]'}`}>
                   {isConnected ? <Wifi size={11} /> : <WifiOff size={11} />}
