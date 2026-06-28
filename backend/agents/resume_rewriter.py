@@ -2,7 +2,7 @@
 import re
 import asyncio
 from typing import Optional, Callable
-from core.singletons import get_llm
+from core.singletons import get_llm, call_gemini_async
 from tools.pdf_tool import pdf_handler
 
 async def rewrite_resume(
@@ -46,10 +46,8 @@ Job Keywords to incorporate: {job_desc[:300]}
 Rewrite now — same line count, same structure, only description content changes:"""
 
     emit("Optimizing resume content with Gemini AI...")
-    llm = get_llm(quality=True)
     try:
-        response = await llm.ainvoke(prompt)
-        rewritten = response.content.strip()
+        rewritten = await call_gemini_async(prompt, quality=True)
     except Exception as e:
         rewritten = f"ERROR: {str(e)}"
 

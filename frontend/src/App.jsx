@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import useAuthStore from "./store/useAuthStore";
@@ -12,68 +12,105 @@ import DailyCoach from "./pages/DailyCoach";
 import AgentStatus from "./pages/AgentStatus";
 import Navbar from "./components/Navbar";
 import { useAgentStream } from "./hooks/useAgentStream";
-import api from "./lib/api";
+import api, { BACKEND_URL, wakeUpBackend } from "./lib/api";
 import axios from "axios";
 
-function BackendStatus() {
-  const [status, setStatus] = useState("checking");
-  const [backendURL, setBackendURL] = useState("");
+export function BackendStatus() {
+  const [status,  setStatus]  = useState("checking");
+  const [message, setMessage] = useState("");
+  const startRef = useRef(Date.now());
 
   useEffect(() => {
-    const url = import.meta.env.VITE_API_URL || "http://localhost:8000";
-    setBackendURL(url);
+    let cancelled = false;
 
     const check = async () => {
+      const t0 = Date.now();
       try {
-        let checkUrl = url.replace(/\/$/, "");
-        if (!checkUrl.endsWith("/api")) {
-          checkUrl += "/api";
-        }
-        const res = await axios.get(`${checkUrl}/health`, { timeout: 4000 });
-        const statusVal = res.data?.status;
-        if (statusVal === "healthy" || statusVal === "ok" || res.data?.gemini_test?.includes("✅")) {
-          setStatus("ok");
-        } else if (statusVal === "online") {
-          setStatus("partial");
+        const res = await axios.get(
+          `${BACKEND_URL}/health`,
+          { timeout: 90000 }
+        );
+        if (cancelled) return;
+
+        const elapsed = Date.now() - t0;
+
+        if (res.data?.status === "online" || res.data?.message) {
+          // Check if Gemini is working
+          const geminiOk = res.data?.gemini_test?.includes("✅") ||
+                           res.data?.llm_available === true ||
+                           !res.data?.gemini_test; // if field missing assume ok
+
+          if (geminiOk) {
+            setStatus("ok");
+          } else {
+            setStatus("no-key");
+            setMessage(res.data?.gemini_test || "Gemini API key may be missing");
+          }
         } else {
-          setStatus("partial");
+          setStatus("ok");
         }
-      } catch {
-        setStatus("down");
+      } catch (err) {
+        if (cancelled) return;
+
+        if (err.code === "ECONNABORTED" || err.message?.includes("timeout")) {
+          // Still waking up — not an error, just slow
+          setStatus("waking");
+        } else if (!err.response) {
+          setStatus("down");
+        } else {
+          // Got a response — backend is up even if not 200
+          setStatus("ok");
+        }
       }
     };
 
     check();
-    const interval = setInterval(check, 20000);
-    return () => clearInterval(interval);
+    const interval = setInterval(check, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   if (status === "ok") return null;
 
+  const configs = {
+    checking: {
+      bg:   "bg-[#F0EEFF] border-[#E8E4FF]",
+      text: "text-[#6B5CE7]",
+      msg:  "🔄 Connecting to backend...",
+    },
+    waking: {
+      bg:   "bg-amber-50 border-amber-100",
+      text: "text-amber-700",
+      msg:  "⏳ Backend is waking up from sleep (Render free tier) — please wait 30-60 seconds then retry",
+    },
+    down: {
+      bg:   "bg-red-50 border-red-100",
+      text: "text-red-700",
+      msg:  `⚠️ Backend not reachable at ${BACKEND_URL} — check Render dashboard at dashboard.render.com`,
+    },
+    "no-key": {
+      bg:   "bg-amber-50 border-amber-100",
+      text: "text-amber-700",
+      msg:  `🔑 Backend running but GOOGLE_API_KEY missing — add it in Render → Environment`,
+    },
+  };
+
+  const cfg = configs[status] || configs.checking;
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className={`w-full py-2 px-4 text-center text-xs font-medium z-[200] ${
-        status === "down"
-          ? "bg-red-50 border-b border-red-200 text-red-600"
-          : status === "partial"
-            ? "bg-amber-50 border-b border-amber-200 text-amber-700"
-            : "bg-[#F0EEFF] border-b border-[#E8E4FF] text-[#6B5CE7]"
-      }`}
-    >
-      {status === "down" && (
-        <>
-          ⚠️ Backend not reachable at <code className="font-mono bg-red-100 px-1 rounded">{backendURL}</code>
-          {backendURL.includes("localhost")
-            ? " — Run: cd backend && uvicorn main:app --reload --port 8000"
-            : " — Check VITE_API_URL in your Vercel/Render environment settings"
-          }
-        </>
+    <div className={`w-full px-4 py-2 text-center text-xs font-medium border-b ${cfg.bg} ${cfg.text} z-[200]`}>
+      {cfg.msg}
+      {status === "waking" && (
+        <button
+          onClick={() => window.location.reload()}
+          className="ml-3 underline font-bold"
+        >
+          Refresh
+        </button>
       )}
-      {status === "partial" && "⚠️ Backend running but Gemini API key missing. Add GOOGLE_API_KEY to backend/.env"}
-      {status === "checking" && "Connecting to backend..."}
-    </motion.div>
+    </div>
   );
 }
 
@@ -145,7 +182,11 @@ export default function App() {
   const { initAuth } = useAuthStore();
 
   useEffect(() => {
+    // Initialize Firebase auth
     const unsub = initAuth();
+    // Wake up Render backend immediately on app load
+    // This gives the 30-60 second cold start time before user clicks anything
+    wakeUpBackend();
     return () => unsub();
   }, []);
 

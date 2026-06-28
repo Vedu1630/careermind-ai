@@ -3,12 +3,7 @@ import os
 import logging
 from dotenv import load_dotenv
 
-# Try importing whisper
-try:
-    import whisper
-    _whisper_installed = True
-except ImportError:
-    _whisper_installed = False
+_whisper_installed = False
 
 import chromadb
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -46,17 +41,8 @@ _embeddings = GoogleGenerativeAIEmbeddings(
     google_api_key=os.getenv("GOOGLE_API_KEY"),
 )
 
-# ── Whisper (loaded once, NEVER again) ────────────────────────────
+# ── Whisper (disabled) ────────────────────────────────────────────
 _whisper_model = None
-if _whisper_installed:
-    print("⚡ Loading Whisper model...")
-    try:
-        _whisper_model = whisper.load_model("base")  # base = best speed/accuracy tradeoff
-        print("✅ Whisper ready")
-    except Exception as e:
-        print(f"⚠️ Whisper load failed: {e}")
-else:
-    print("⚠️ Whisper package not installed, using SpeechRecognition fallback")
 
 # ── ChromaDB (one client, one collection, indexed) ────────────────
 _chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
@@ -138,3 +124,34 @@ def get_http_client():
 
 def get_cache():
     return _cache
+
+import asyncio
+from functools import partial
+
+def call_gemini(prompt: str, quality: bool = False) -> str:
+    try:
+        llm = get_llm(quality=quality)
+        resp = llm.invoke(prompt)
+        return resp.content.strip()
+    except Exception as e:
+        return f"ERROR: {e}"
+
+async def call_gemini_async(prompt: str, quality: bool = False) -> str:
+    """
+    Async Gemini call with timeout.
+    Never hangs — returns error message if too slow.
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                partial(call_gemini, prompt, quality)
+            ),
+            timeout=25.0  # 25 second max per Gemini call
+        )
+        return result
+    except asyncio.TimeoutError:
+        return "ERROR: Gemini call timed out after 25 seconds"
+    except Exception as e:
+        return f"ERROR: {str(e)}"

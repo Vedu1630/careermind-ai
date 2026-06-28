@@ -5,7 +5,7 @@ import hashlib
 import logging
 import PyPDF2
 from langchain.prompts import ChatPromptTemplate
-from core.singletons import get_llm, get_skills_retriever, get_cache
+from core.singletons import get_llm, get_skills_retriever, get_cache, call_gemini_async
 
 logger = logging.getLogger(__name__)
 
@@ -74,24 +74,18 @@ async def analyze_resume(file_path: str, user_id: str = "anonymous", progress_ca
         skills_context = "Python, JavaScript, React, FastAPI, Machine Learning, LangChain"
 
     emit("Analyzing resume with Gemini AI...")
-    prompt = ChatPromptTemplate.from_template("""
+    try:
+        formatted_prompt = f"""
 Analyze this resume. Return ONLY valid JSON, no markdown.
 
-Resume: {resume}
-Industry skills context: {context}
+Resume: {resume_truncated}
+Industry skills context: {skills_context}
 
 Return this exact JSON:
 {{"skills_found":["skill1","skill2"],"skill_gaps":["gap1","gap2"],"experience_level":"junior|mid|senior","overall_score":75,"ats_score":70,"sections_detected":["Education","Experience"],"suggestions":["tip1","tip2"],"strengths":["str1","str2"],"keywords_missing":["kw1","kw2"],"format_issues":["issue1"]}}
-""")
-
-    chain = prompt | get_llm(quality=False)
-
-    try:
-        result = chain.invoke({
-            "resume":   resume_truncated,
-            "context":  skills_context
-        })
-        cleaned = re.sub(r"```json|```", "", result.content).strip()
+"""
+        raw_output = await call_gemini_async(formatted_prompt)
+        cleaned = re.sub(r"```json|```", "", raw_output).strip()
         parsed = json.loads(cleaned)
         parsed["resume_text"] = resume_text  # store for rewriter
         cache[cache_key] = parsed

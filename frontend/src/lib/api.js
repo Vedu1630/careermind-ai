@@ -1,26 +1,12 @@
 import axios from "axios";
 
-// Get backend URL — must be set in Vercel environment variables
 const getBackendURL = () => {
-  const envURL = import.meta.env.VITE_API_URL;
-
-  // Use env var if properly set
-  if (envURL &&
-      envURL !== "undefined" &&
-      envURL !== "" &&
-      envURL !== "null") {
-    return envURL.replace(/\/$/, "");
+  // Check env var set in Vercel dashboard
+  const env = import.meta.env.VITE_API_URL;
+  if (env && env !== "undefined" && env !== "" && env !== "null") {
+    return env.replace(/\/$/, "");
   }
-
-  // Local development fallback
-  if (typeof window !== "undefined" &&
-      (window.location.hostname === "localhost" ||
-       window.location.hostname === "127.0.0.1")) {
-    return "http://localhost:8000";
-  }
-
-  // Production fallback — should never reach here if VITE_API_URL is set
-  console.error("❌ VITE_API_URL not set in environment variables");
+  // Local fallback
   return "http://localhost:8000";
 };
 
@@ -29,67 +15,50 @@ console.log("🔗 Backend:", BACKEND_URL);
 
 const api = axios.create({
   baseURL: BACKEND_URL,
-  timeout: 45000,
+  timeout: 90000,  // 90 seconds — handles Render cold start
   headers: {
     "Content-Type": "application/json",
     "Accept":       "application/json",
   },
 });
 
-// Add request logging in development
-api.interceptors.request.use((config) => {
-  if (import.meta.env.DEV) {
-    console.log(`→ ${config.method?.toUpperCase()} ${config.url}`, config.params || "");
-  }
+api.interceptors.request.use(config => {
+  console.log(`→ ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
   return config;
 });
 
-// Handle all error types
 api.interceptors.response.use(
-  (response) => {
-    if (import.meta.env.DEV) {
-      console.log(`✅ ${response.config.url} — ${response.status}`);
-    }
-    return response;
-  },
-  (error) => {
+  res => res,
+  error => {
     const status = error.response?.status;
-    const url    = error.config?.url || "";
-
-    if (error.code === "ERR_CANCELED" || error.name === "AbortError") {
-      error.userMessage = "Request cancelled.";
-      return Promise.reject(error);
-    }
-
     if (!error.response) {
-      // Network error — backend unreachable
-      console.error(`❌ Network error: ${url} — Cannot reach ${BACKEND_URL}`);
-      error.userMessage = (
-        BACKEND_URL.includes("localhost")
-          ? "Backend not running. Run: cd backend && uvicorn main:app --reload --port 8000"
-          : `Cannot reach backend at ${BACKEND_URL}. Check Render dashboard.`
-      );
-    } else if (status === 502) {
-      error.userMessage = "Backend crashed (502). Check Render logs at dashboard.render.com";
-    } else if (status === 503) {
-      error.userMessage = error.response.data?.detail || "Backend starting up. Wait 30s and retry.";
-    } else if (status === 422) {
-      const detail = error.response.data?.detail;
-      error.userMessage = Array.isArray(detail)
-        ? detail.map(d => d.msg).join(", ")
-        : detail || "Invalid request.";
+      error.userMessage = `Cannot reach backend at ${BACKEND_URL}`;
     } else if (status === 404) {
-      error.userMessage = `Endpoint not found: ${url}. Backend may need redeployment.`;
-    } else if (status === 500) {
-      error.userMessage = error.response.data?.detail || "Server error. Check Render logs.";
+      error.userMessage = `Endpoint not found: ${error.config?.url} — backend needs redeployment`;
+    } else if (status === 502) {
+      error.userMessage = "Backend crashed (502) — check Render logs";
+    } else if (status === 503) {
+      error.userMessage = "Backend waking up — wait 30s and retry";
     } else {
-      error.userMessage = error.response.data?.detail || error.message || "Request failed.";
+      error.userMessage = error.response?.data?.detail || error.message || "Request failed";
     }
-
-    console.error(`❌ API Error ${status || "Network"}: ${url} — ${error.userMessage}`);
+    console.error(`❌ ${status || "Network"}: ${error.config?.url} — ${error.userMessage}`);
     return Promise.reject(error);
   }
 );
+
+// Wake up backend on app load to reduce cold start for first real request
+export const wakeUpBackend = async () => {
+  try {
+    console.log("🔄 Waking up backend...");
+    await axios.get(`${BACKEND_URL}/health`, { timeout: 90000 });
+    console.log("✅ Backend is awake");
+    return true;
+  } catch (e) {
+    console.warn("⚠️ Backend wake-up:", e.message);
+    return false;
+  }
+};
 
 // ── Additional Helper Functions to keep existing methods ───────────────────
 export const getOrCreateToken = async () => {

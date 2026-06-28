@@ -1,5 +1,11 @@
 # tools/pdf_tool.py
-import fitz  # pymupdf
+try:
+    import fitz  # pymupdf
+    _fitz_available = True
+except ImportError:
+    _fitz_available = False
+    fitz = None
+
 import pdfplumber
 import io
 import re
@@ -33,6 +39,11 @@ class PDFResumeHandler:
         4. Reinsert new text at EXACT same position, font, size, color
         5. Never touch unchanged lines — they stay pixel-perfect
         """
+        if not _fitz_available:
+            print("⚠️ PyMuPDF is not installed. Returning original PDF.")
+            with open(original_path, "rb") as f:
+                return f.read()
+
         doc    = fitz.open(original_path)
         changes = self._build_change_map(original_text, rewritten_text)
 
@@ -180,7 +191,7 @@ class PDFResumeHandler:
                     (color        & 0xFF) / 255)
         return (0.0, 0.0, 0.0)
 
-    def _get_bg_color(self, page: fitz.Page, rect: fitz.Rect) -> tuple:
+    def _get_bg_color(self, page, rect) -> tuple:
         """Sample background color at a location. Most resumes are white."""
         try:
             clip = fitz.Rect(rect.x0, rect.y0, rect.x0 + 3, rect.y0 + 3)
@@ -198,7 +209,7 @@ class PDFResumeHandler:
             pass
         return (1.0, 1.0, 1.0)
 
-    def _process_page(self, page: fitz.Page, changes: dict):
+    def _process_page(self, page, changes: dict):
         """Process a single PDF page — find changed spans, redact, reinsert."""
         blocks = page.get_text(
             "rawdict",

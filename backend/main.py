@@ -24,7 +24,8 @@ import config as cfg
 from db import init_db, get_session, upsert_session
 
 from core.singletons import (
-    get_llm, get_whisper, get_http_client, _init_skills_vectorstore, get_cache
+    get_llm, get_http_client, _init_skills_vectorstore, get_cache,
+    call_gemini, call_gemini_async
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -55,16 +56,31 @@ async def lifespan(app: FastAPI):
         _init_skills_vectorstore()
     except Exception as e:
         logger.warning("ChromaDB pre-warming failed: %s", e)
-        
-    logger.info("⚡ Pre-warming Whisper...")
-    try:
-        get_whisper()
-    except Exception as e:
-        logger.warning("Whisper pre-warming failed: %s", e)
-        
+
+    # Keep-alive task — pings self every 14 minutes to prevent Render sleep
+    async def keep_alive():
+        await asyncio.sleep(60)  # wait 1 min after startup before starting pings
+        while True:
+            try:
+                import httpx
+                render_url = os.getenv("RENDER_EXTERNAL_URL", "")
+                if render_url:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        r = await client.get(f"{render_url}/api/health")
+                        print(f"✅ Keep-alive ping: {r.status_code}")
+            except Exception as e:
+                print(f"⚠️ Keep-alive failed: {e}")
+            await asyncio.sleep(840)  # 14 minutes
+
+    task = asyncio.create_task(keep_alive())
     logger.info("✅ All systems ready — CareerMind AI is live!")
     yield
     # Shutdown
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     try:
         await get_http_client().aclose()
     except Exception:
@@ -75,7 +91,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="CareerMind AI",
     description="Multi-agent AI Career Coach Platform API",
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan
@@ -84,6 +100,17 @@ app = FastAPI(
 # Add response compression middleware
 from fastapi.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+@app.get("/")
+async def root():
+    return {
+        "message":  "CareerMind AI backend is running",
+        "status":   "online",
+        "version":  "2.0.0",
+        "docs":     "/docs",
+        "health":   "/health",
+        "diagnose": "/api/diagnose"
+    }
 
 # Build allowed origins list
 FRONTEND_URL = os.getenv("FRONTEND_URL", "")
@@ -155,15 +182,6 @@ def get_current_user(
 
 # ── Helper functions for agents ───────────────────────────────────────────────
 LLM_AVAILABLE = True
-
-def call_gemini(prompt: str) -> str:
-    try:
-        from core.singletons import get_llm
-        llm = get_llm(quality=False)
-        resp = llm.invoke(prompt)
-        return resp.content.strip()
-    except Exception as e:
-        return f"ERROR: {e}"
 
 def parse_json_safe(raw: str, default: dict) -> dict:
     try:
@@ -809,54 +827,51 @@ async def score_uploaded_pdf(
 # ── Interview — Generate Question ─────────────────────────────────────────────
 @app.post("/api/interview/question")
 async def get_interview_question(request: dict):
-    job_title      = (request.get("job_title") or "Software Engineer").strip()
-    round_number   = int(request.get("round_number") or 1)
-    history        = request.get("history") or []
-    interview_type = request.get("interview_type") or "mixed"
-    company        = (request.get("company") or "").strip()
+    job_title    = str(request.get("job_title") or "Software Engineer")
+    round_number = int(request.get("round_number") or 1)
+    history      = request.get("history") or []
+    interview_type = str(request.get("interview_type") or "mixed")
+    company      = str(request.get("company") or "")
 
-    # Round 1 is always the same opener
     if round_number == 1:
-        question = f"Tell me about yourself and why you are interested in this {job_title} role."
-        return {"question": question, "round": round_number}
+        return {
+            "question": f"Tell me about yourself and why you are interested in this {job_title} role.",
+            "round": 1
+        }
 
-    # Build history context — last 3 questions only
-    prev_questions = " | ".join(
-        h.get("question", "")[:80]
-        for h in (history or [])[-3:]
-        if h.get("question")
+    prev = " | ".join(
+        h.get("question", "")[:60]
+        for h in (history or [])[-2:]
+        if isinstance(h, dict) and h.get("question")
     )
 
     type_map = {
-        "behavioural": "Ask a STAR-method behavioural question about past experience, teamwork, or challenge.",
-        "technical":   f"Ask a technical question about {job_title} skills, system design, or problem solving.",
-        "hr":          "Ask about career goals, salary expectations, work style, or company culture fit.",
-        "mixed":       f"Ask a relevant question for a {job_title} interview mixing technical and behavioural elements.",
+        "behavioural": "Ask a STAR behavioural question about past experience or challenge.",
+        "technical":   f"Ask a technical question relevant to {job_title} skills or system design.",
+        "hr":          "Ask about career goals, motivations, or culture fit.",
+        "mixed":       f"Ask a relevant {job_title} interview question.",
     }
     instruction  = type_map.get(interview_type, type_map["mixed"])
-    company_line = f"The company is {company}. " if company else ""
+    company_line = f"Company: {company}. " if company else ""
 
     prompt = (
-        f"You are a senior interviewer conducting a {job_title} interview.\n"
-        f"{company_line}Round {round_number} of 5. {instruction}\n"
-        f"Previously asked: {prev_questions or 'None yet'}\n"
-        f"Do NOT repeat any previous question.\n"
-        f"Make questions progressively harder each round.\n"
-        f"Return ONLY the interview question. One sentence. Nothing else."
+        f"You are interviewing a candidate for {job_title}. "
+        f"{company_line}Round {round_number} of 5. {instruction} "
+        f"Already asked: {prev or 'nothing yet'}. "
+        f"Do NOT repeat any previous question. "
+        f"Return ONLY the question text. One sentence."
     )
 
-    loop     = asyncio.get_event_loop()
-    question = await loop.run_in_executor(None, lambda: call_gemini(prompt))
+    question = await call_gemini_async(prompt)
 
-    # Fallback questions if Gemini fails
     if not question or question.startswith("ERROR:"):
         fallbacks = {
-            2: f"What is your strongest technical skill relevant to the {job_title} role, and give a specific example of how you used it?",
-            3: f"Describe a challenging project you worked on. What was your specific contribution and what did you learn?",
-            4: f"How would you design a scalable system for a {job_title} position? Walk me through your approach.",
-            5: "Where do you see yourself in 3 years, and how does this role fit into your career goals?",
+            2: "What is your strongest technical skill and give a specific example of how you applied it?",
+            3: "Describe a challenging technical problem you solved. What was your approach?",
+            4: "How would you design a scalable REST API? Walk me through your architecture decisions.",
+            5: "Where do you see yourself in 3 years and how does this role fit your career path?",
         }
-        question = fallbacks.get(round_number, f"What makes you the best candidate for this {job_title} position?")
+        question = fallbacks.get(round_number, f"What makes you the right fit for this {job_title} role?")
 
     return {"question": question.strip(), "round": round_number}
 
@@ -961,9 +976,7 @@ Examples of good follow-ups:
 Return ONLY the follow-up question. One sentence. No preamble.
 """
     try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: cfg.llm_creative.invoke(prompt))
-        followup_text = result.content.strip() if hasattr(result, "content") else str(result)
+        followup_text = await call_gemini_async(prompt, quality=True)
         followup_text = followup_text.strip().strip('"').strip("'")
     except Exception as e:
         logger.error("Follow-up generation failed: %s", e)
@@ -1012,9 +1025,7 @@ Generate a final assessment in this EXACT JSON format (no markdown, no extra tex
 """
     try:
         from agents.mock_interviewer import _parse_json_from_llm
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: cfg.llm.invoke(prompt))
-        raw_output = result.content if hasattr(result, "content") else str(result)
+        raw_output = await call_gemini_async(prompt, quality=False)
         report_data = _parse_json_from_llm(raw_output)
     except Exception as e:
         logger.error("Report generation failed: %s", e)
@@ -1162,9 +1173,7 @@ User just said: "{user_message}"
 Respond as {coach_name} now. Follow all the rules above strictly. Ensure your response is highly contextual, stays on the topic, never repeats a question, and is under 3 sentences."""
 
     try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: cfg.llm_creative.invoke(prompt))
-        reply_text = result.content.strip() if hasattr(result, "content") else str(result)
+        reply_text = await call_gemini_async(prompt, quality=True)
         # Remove any unwanted asterisks, markdown, or braces
         reply_text = re.sub(r"[*`_\-\#]", "", reply_text).strip()
     except Exception as e:
@@ -1366,29 +1375,64 @@ Vocabulary highlights must be ACTUAL words from their text — never invent them
 """)
 
     try:
-        chain = prompt | cfg.llm
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: chain.invoke({
-                "word_count":            word_count,
-                "message_count":         message_count,
-                "avg_words_per_message": avg_words_per_message,
-                "vocab_diversity":       vocab_diversity,
-                "filler_count":          filler_count,
-                "grammar_flags":         str(grammar_flags) if grammar_flags else "None detected",
-                "calculated_score":      calculated_score,
-                "user_text":             full_user_text[:2000],  # cap for token limit
-                "agent_text":            " | ".join([
-                    m.get("content", "")[:100]
-                    for m in history
-                    if m.get("role") == "assistant"
-                ])[:500]
-            })
-        )
+        agent_text = " | ".join([
+            m.get("content", "")[:100]
+            for m in history
+            if m.get("role") == "assistant"
+        ])[:500]
+        formatted_prompt = f"""
+You are an expert English communication coach giving feedback on a student's 10-minute speaking practice.
 
+ACTUAL MEASURED METRICS (use these — do not guess):
+- Total words spoken: {word_count}
+- Number of replies: {message_count}  
+- Average words per reply: {avg_words_per_message}
+- Vocabulary diversity score: {vocab_diversity}% (unique words / total words)
+- Filler words detected: {filler_count} times
+- Grammar issues detected: {grammar_flags if grammar_flags else 'None detected'}
+- Calculated fluency score: {calculated_score}/100
+
+STUDENT'S ACTUAL WORDS (analyze THIS specific text):
+{full_user_text[:2000]}
+
+AGENT'S MESSAGES FOR CONTEXT:
+{agent_text}
+
+YOUR TASK:
+Give feedback based ONLY on what this specific student actually said above.
+If they used short answers, say so specifically.
+If they had good vocabulary, quote the actual good words they used.
+If they made grammar mistakes, quote the actual mistake from their text.
+Do NOT give generic feedback. Do NOT make up things they did well if they didn't.
+Be honest, specific, and encouraging.
+
+Return ONLY valid JSON — no markdown, no backticks:
+{{
+  "overall_feedback": "<2 specific sentences referencing actual things they said or patterns observed>",
+  "strengths": [
+    "<specific strength with example from their actual speech>",
+    "<specific strength — ONLY include if genuinely observed>",
+    "<optional third strength — omit if not genuinely observed>"
+  ],
+  "improvements": [
+    "<specific improvement with example of what to do differently>",
+    "<specific improvement>",
+    "<optional third — omit if only 2 real improvements found>"
+  ],
+  "vocabulary_highlights": [
+    "<actual good word or phrase they used — quote it exactly>",
+    "<another real word they used>"
+  ],
+  "grammar_notes": "<specific grammar observation — quote actual mistake if found, or confirm grammar was good>",
+  "topic_engagement": "<how well did they develop topics — were answers long or short, did they elaborate?>"
+}}
+
+IMPORTANT: If strengths array would be dishonest, only include 1 item.
+Vocabulary highlights must be ACTUAL words from their text — never invent them.
+"""
+        raw_output = await call_gemini_async(formatted_prompt, quality=False)
         import json
-        cleaned = re.sub(r"```json|```", "", result.content).strip()
+        cleaned = re.sub(r"```json|```", "", raw_output).strip()
         parsed  = json.loads(cleaned)
 
         # Always use our calculated score — never let Gemini change it
@@ -1438,12 +1482,24 @@ async def get_user_session(
 
 
 # ── Health Check ───────────────────────────────────────────────────────────────
+@app.get("/health")
 @app.get("/api/health")
 async def health():
+    gemini_status = "❌ missing key"
+    if os.getenv("GOOGLE_API_KEY"):
+        try:
+            res = await call_gemini_async("Say OK", max_tokens=10)
+            if "ERROR" not in res:
+                gemini_status = f"✅ working (response: {res})"
+            else:
+                gemini_status = f"❌ failed ({res})"
+        except Exception as e:
+            gemini_status = f"❌ failed ({str(e)})"
     return {
-        "status": "healthy",
+        "status": "online",
         "service": "CareerMind AI",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "gemini_test": gemini_status,
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -1629,7 +1685,8 @@ async def diagnose_everything():
 
 # ── WebSocket — Agent Stream ──────────────────────────────────────────────────
 @app.websocket("/ws/agent-stream")
-async def agent_stream(websocket: WebSocket, user_id: str = Query(default="")):
+@app.websocket("/ws/agent-stream/{user_id}")
+async def agent_stream(websocket: WebSocket, user_id: Optional[str] = None):
     """
     WebSocket endpoint for real-time agent activity streaming.
     Client should connect with: ws://localhost:8000/ws/agent-stream?user_id=xxx
