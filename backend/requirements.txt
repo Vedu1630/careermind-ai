@@ -10,12 +10,4 @@ langchain-google-genai==1.0.10
 chromadb==0.5.15
 PyPDF2==3.0.1
 requests==2.31.0
-Pillow==10.4.0
-pdfplumber==0.11.4
-SpeechRecognition==3.10.4
-python-jose[cryptography]==3.3.0
-pydantic==2.8.2
-pdf2image==1.17.0
-pypdf==4.2.0
-img2pdf==0.5.1
-uvloop==0.19.0
+reportlab==4.2.2
