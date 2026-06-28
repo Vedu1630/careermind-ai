@@ -90,54 +90,20 @@ def get_llm():
         return None
 
 def call_gemini(prompt: str) -> str:
-    """Call Gemini using the official SDK. Falls back to Groq if key is present and Gemini fails."""
+    """Call Gemini using the official SDK."""
     try:
         model = get_llm()
         if model is None:
-            raise Exception("Gemini model not initialized")
+            return "ERROR: Gemini not available. Check GOOGLE_API_KEY in Render environment."
         response = model.generate_content(prompt)
         return response.text or ""
     except Exception as e:
         err = str(e)
         print(f"❌ Gemini call failed: {err}")
-        
-        # Check if GROQ_API_KEY is configured
-        groq_key = os.getenv("GROQ_API_KEY", "").strip()
-        if groq_key:
-            print("🔄 Falling back to Groq...")
-            try:
-                import httpx
-                # Simple synchronous post to Groq API
-                # Llama 3.3 70B is versatile and extremely fast
-                response = httpx.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {groq_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "llama-3.3-70b-versatile",
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.2,
-
-                        "max_tokens": 1000
-                    },
-                    timeout=15.0
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    groq_reply = data["choices"][0]["message"]["content"]
-                    print("✅ Groq fallback call succeeded!")
-                    return groq_reply
-                else:
-                    print(f"❌ Groq fallback failed: {response.text}")
-            except Exception as ge:
-                print(f"❌ Groq exception: {ge}")
-                
         if "API_KEY" in err or "api key" in err.lower() or "credentials" in err.lower():
             return "ERROR: Invalid GOOGLE_API_KEY. Verify it in Render → Environment."
         if any(k in err.lower() for k in ["quota", "429", "rate limit", "resource exhausted"]):
-            return "⚠️ Primary AI quota exceeded. Switching to backup provider (Groq). Please retry your request."
+            return "ERROR: Gemini quota exceeded. Wait and retry."
         return f"ERROR: {err[:150]}"
 
 
