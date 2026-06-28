@@ -20,7 +20,6 @@ const navLinks = [
   { to: '/rewrite', label: 'Rewrite', icon: FileEdit },
   { to: '/interview', label: 'Interview', icon: Mic },
   { to: '/daily-coach', label: 'Daily Coach', icon: Flame, isDailyCoach: true },
-  { to: '/status', label: 'Agent Status', icon: Activity },
 ]
 
 export default function Navbar() {
@@ -84,11 +83,6 @@ export default function Navbar() {
             </svg>
           </div>
           <span className="font-extrabold text-[15px] text-[#111] tracking-tight">CareerMind AI</span>
-          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ml-1.5 transition-all duration-300 ${
-            provider === "groq" ? "bg-orange-50 text-orange-600 border border-orange-200" : "bg-emerald-50 text-emerald-600 border border-emerald-200"
-          }`}>
-            {provider === "groq" ? "⚡ Groq backup" : "✨ Gemini"}
-          </span>
         </Link>
 
         {/* Desktop nav */}
