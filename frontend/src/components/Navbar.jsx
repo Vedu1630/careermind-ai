@@ -29,6 +29,20 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const dropdownRef = useRef(null)
+  const [provider, setProvider] = useState("gemini")
+
+  useEffect(() => {
+    const apiURL = import.meta.env.VITE_API_URL || "http://localhost:8000"
+    fetch(`${apiURL.replace(/\/$/, "")}/api/health`)
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.llm_provider) {
+          setProvider(d.llm_provider)
+        }
+      })
+      .catch(e => console.error("Error fetching provider status:", e))
+  }, [])
+
 
   const { user, signOut } = useAuthStore()
   const store = useStore()
@@ -70,6 +84,11 @@ export default function Navbar() {
             </svg>
           </div>
           <span className="font-extrabold text-[15px] text-[#111] tracking-tight">CareerMind AI</span>
+          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ml-1.5 transition-all duration-300 ${
+            provider === "groq" ? "bg-orange-50 text-orange-600 border border-orange-200" : "bg-emerald-50 text-emerald-600 border border-emerald-200"
+          }`}>
+            {provider === "groq" ? "⚡ Groq backup" : "✨ Gemini"}
+          </span>
         </Link>
 
         {/* Desktop nav */}

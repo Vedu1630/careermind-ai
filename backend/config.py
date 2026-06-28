@@ -5,39 +5,157 @@ Initializes LLM, embeddings, and environment variables.
 import os
 os.environ["GRPC_DNS_RESOLVER"] = "native"
 
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from dotenv import load_dotenv
-import os
 from pathlib import Path
+import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_groq import ChatGroq
 
 # Load env file relative to config.py location
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-# ── LLM ──────────────────────────────────────────────────────────────────────
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
-    temperature=0.3,
-    convert_system_message_to_human=True,
-    max_retries=0,
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+# Configure Gemini
+if GOOGLE_API_KEY:
+    genai.configure(api_key=GOOGLE_API_KEY)
+
+# Gemini quota/rate-limit error keywords to detect
+GEMINI_QUOTA_ERRORS = (
+    "quota",
+    "rate limit",
+    "429",
+    "resource exhausted",
+    "quota exceeded",
+    "too many requests",
 )
 
-# Creative LLM for natural, conversational, and highly engaging responses (temperature=0.7)
-llm_creative = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
-    temperature=0.7,
-    convert_system_message_to_human=True,
-    max_retries=0,
-)
+def is_gemini_quota_error(error: Exception) -> bool:
+    """Return True if the error is a Gemini quota/rate-limit error."""
+    msg = str(error).lower()
+    return any(keyword in msg for keyword in GEMINI_QUOTA_ERRORS)
 
-# ── Embeddings ────────────────────────────────────────────────────────────────
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/gemini-embedding-001",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
-    max_retries=0,
-)
+# Primary: Gemini LLM
+def get_gemini_llm(temperature: float = 0.7, max_tokens: int = None):
+    if not GOOGLE_API_KEY:
+        return None
+    kwargs = {
+        "model": "gemini-1.5-flash",
+        "google_api_key": GOOGLE_API_KEY,
+        "temperature": temperature,
+        "convert_system_message_to_human": True,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return ChatGoogleGenerativeAI(**kwargs)
+
+# Fallback: Groq LLM
+def get_groq_llm(temperature: float = 0.7, max_tokens: int = None):
+    if not GROQ_API_KEY:
+        return None
+    kwargs = {
+        "model": "llama-3.3-70b-versatile",
+        "groq_api_key": GROQ_API_KEY,
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return ChatGroq(**kwargs)
+
+# Smart LLM: tries Gemini first, falls back to Groq
+class SmartLLM:
+    """
+    A wrapper that calls Gemini first. If Gemini raises a quota/rate-limit
+    error, it automatically retries with Groq.
+    """
+    def __init__(self, temperature: float = 0.7, max_tokens: int = None):
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self._gemini = get_gemini_llm(temperature, max_tokens)
+        self._groq = get_groq_llm(temperature, max_tokens)
+        self.active_provider = "gemini" if self._gemini else "groq"
+
+    def invoke(self, messages, **kwargs):
+        # Try Gemini first
+        if self._gemini:
+            try:
+                result = self._gemini.invoke(messages, **kwargs)
+                self.active_provider = "gemini"
+                return result
+            except Exception as e:
+                if is_gemini_quota_error(e):
+                    print(f"[SmartLLM] Gemini quota exceeded, switching to Groq. Error: {e}")
+                    if self._groq:
+                        self.active_provider = "groq"
+                        return self._groq.invoke(messages, **kwargs)
+                    else:
+                        raise RuntimeError(
+                            "Gemini quota exceeded and no GROQ_API_KEY configured. "
+                            "Add GROQ_API_KEY to your .env file."
+                        ) from e
+                raise  # re-raise non-quota errors
+
+        # Gemini not configured, use Groq directly
+        if self._groq:
+            self.active_provider = "groq"
+            return self._groq.invoke(messages, **kwargs)
+
+        raise RuntimeError(
+            "No LLM configured. Set GOOGLE_API_KEY or GROQ_API_KEY in .env"
+        )
+
+    async def ainvoke(self, messages, **kwargs):
+        # Async version — try Gemini, fall back to Groq
+        if self._gemini:
+            try:
+                result = await self._gemini.ainvoke(messages, **kwargs)
+                self.active_provider = "gemini"
+                return result
+            except Exception as e:
+                if is_gemini_quota_error(e):
+                    print(f"[SmartLLM] Gemini quota exceeded (async), switching to Groq.")
+                    if self._groq:
+                        self.active_provider = "groq"
+                        return await self._groq.ainvoke(messages, **kwargs)
+                    else:
+                        raise RuntimeError("Gemini quota exceeded and no GROQ_API_KEY set.") from e
+                raise
+
+        if self._groq:
+            self.active_provider = "groq"
+            return await self._groq.ainvoke(messages, **kwargs)
+
+        raise RuntimeError("No LLM configured.")
+
+    # Support | piping (LangChain chains: llm | parser)
+    def __or__(self, other):
+        from langchain_core.runnables import RunnableLambda
+        import asyncio
+
+        def sync_invoke(messages):
+            return self.invoke(messages)
+
+        return RunnableLambda(sync_invoke) | other
+
+
+# Embeddings — keep Gemini (no quota concern for embeddings in typical use)
+def get_embeddings():
+    if GOOGLE_API_KEY:
+        return GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=GOOGLE_API_KEY,
+        )
+    raise RuntimeError("GOOGLE_API_KEY required for embeddings (ChromaDB RAG).")
+
+# Convenience singletons
+smart_llm = SmartLLM(temperature=0.7)
+embeddings = get_embeddings()
+
+# Legacy aliases so existing agent imports don't break
+llm = smart_llm
+llm_creative = smart_llm
 
 # ── LangSmith tracing (auto-enabled via env vars) ────────────────────────────
 LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false")

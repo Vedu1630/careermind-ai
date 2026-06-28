@@ -108,7 +108,7 @@ def call_gemini(prompt: str) -> str:
             try:
                 import httpx
                 # Simple synchronous post to Groq API
-                # Llama 3.1 70B is versatile and extremely fast
+                # Llama 3.3 70B is versatile and extremely fast
                 response = httpx.post(
                     "https://api.groq.com/openai/v1/chat/completions",
                     headers={
@@ -116,9 +116,10 @@ def call_gemini(prompt: str) -> str:
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": "llama-3.1-70b-versatile",
+                        "model": "llama-3.3-70b-versatile",
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0.2,
+
                         "max_tokens": 1000
                     },
                     timeout=15.0
@@ -135,9 +136,10 @@ def call_gemini(prompt: str) -> str:
                 
         if "API_KEY" in err or "api key" in err.lower() or "credentials" in err.lower():
             return "ERROR: Invalid GOOGLE_API_KEY. Verify it in Render → Environment."
-        if "quota" in err.lower() or "429" in err:
-            return "ERROR: Gemini quota exceeded. Wait and retry."
+        if any(k in err.lower() for k in ["quota", "429", "rate limit", "resource exhausted"]):
+            return "⚠️ Primary AI quota exceeded. Switching to backup provider (Groq). Please retry your request."
         return f"ERROR: {err[:150]}"
+
 
 async def call_gemini_async(prompt: str, timeout: float = 30.0) -> str:
     """Async Gemini call with timeout."""
@@ -254,6 +256,17 @@ async def root():
         "docs":     "/docs",
         "health":   "/health",
         "diagnose": "/api/diagnose",
+    }
+
+@app.get("/api/health")
+async def health_check():
+    from config import smart_llm
+    import os
+    return {
+        "status": "ok",
+        "llm_provider": smart_llm.active_provider,
+        "gemini_configured": bool(os.getenv("GOOGLE_API_KEY")),
+        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
     }
 
 @app.get("/health")

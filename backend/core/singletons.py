@@ -6,12 +6,12 @@ from dotenv import load_dotenv
 _whisper_installed = False
 
 import chromadb
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 import httpx
-from config import CHROMA_DB_DIR, SKILLS_KB_DIR
+from config import CHROMA_DB_DIR, SKILLS_KB_DIR, SmartLLM
 
 load_dotenv()
 
@@ -20,20 +20,14 @@ logger = logging.getLogger(__name__)
 print("⚡ Initializing singletons...")
 
 # ── LLM (one instance, reused everywhere) ─────────────────────────
-_llm_fast = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
+_llm_fast = SmartLLM(
     temperature=0.1,          # lower = faster, more deterministic
     max_tokens=800,           # cap output tokens for speed
-    convert_system_message_to_human=True,
 )
 
-_llm_quality = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    google_api_key=os.getenv("GOOGLE_API_KEY"),
+_llm_quality = SmartLLM(
     temperature=0.3,
     max_tokens=2000,          # for rewriting tasks that need more output
-    convert_system_message_to_human=True,
 )
 
 _embeddings = GoogleGenerativeAIEmbeddings(
