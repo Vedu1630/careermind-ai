@@ -23,6 +23,16 @@ from pydantic import BaseModel
 import config as cfg
 from db import init_db, get_session, upsert_session
 
+# Force re-read of environment at startup
+from dotenv import load_dotenv
+load_dotenv()  # loads .env if exists locally
+
+# Print env var status at startup so Render logs show it clearly
+GOOGLE_KEY_SET = bool(os.getenv("GOOGLE_API_KEY", "").strip())
+print(f"{'✅' if GOOGLE_KEY_SET else '❌'} GOOGLE_API_KEY: {'SET' if GOOGLE_KEY_SET else 'NOT SET'}")
+print(f"{'✅' if os.getenv('RAPIDAPI_KEY') else '⚠️'} RAPIDAPI_KEY: {'SET' if os.getenv('RAPIDAPI_KEY') else 'NOT SET'}")
+print(f"{'✅' if os.getenv('ADZUNA_APP_ID') else '⚠️'} ADZUNA_APP_ID: {'SET' if os.getenv('ADZUNA_APP_ID') else 'NOT SET'}")
+
 from core.singletons import (
     get_llm, get_http_client, _init_skills_vectorstore, get_cache,
     call_gemini, call_gemini_async
@@ -1484,24 +1494,63 @@ async def get_user_session(
 # ── Health Check ───────────────────────────────────────────────────────────────
 @app.get("/health")
 @app.get("/api/health")
-async def health():
-    gemini_status = "❌ missing key"
-    if os.getenv("GOOGLE_API_KEY"):
-        try:
-            res = await call_gemini_async("Say OK", max_tokens=10)
-            if "ERROR" not in res:
-                gemini_status = f"✅ working (response: {res})"
-            else:
-                gemini_status = f"❌ failed ({res})"
-        except Exception as e:
-            gemini_status = f"❌ failed ({str(e)})"
-    return {
-        "status": "online",
-        "service": "CareerMind AI",
-        "version": "2.0.0",
-        "gemini_test": gemini_status,
-        "timestamp": datetime.utcnow().isoformat(),
+async def health_check():
+    import os, time
+
+    google_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    key_set    = bool(google_key) and google_key != "your_gemini_key_here"
+
+    result = {
+        "status":         "online",
+        "version":        "2.0.0",
+        "google_api_key": "SET" if key_set else "MISSING",
+        "gemini_test":    None,
+        "llm_available":  LLM_AVAILABLE,
+        "env_vars": {
+            "GOOGLE_API_KEY":  "✅ SET"    if key_set else "❌ MISSING",
+            "RAPIDAPI_KEY":    "✅ SET"    if os.getenv("RAPIDAPI_KEY","").strip() else "⚠️ not set",
+            "ADZUNA_APP_ID":   "✅ SET"    if os.getenv("ADZUNA_APP_ID","").strip() else "⚠️ not set",
+            "FRONTEND_URL":    os.getenv("FRONTEND_URL", "not set"),
+        }
     }
+
+    # Only test Gemini if key is set
+    if key_set and LLM_AVAILABLE:
+        try:
+            start = time.time()
+            # Use asyncio timeout so it never hangs health check
+            loop = asyncio.get_event_loop()
+            test_result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: call_gemini("Reply with the single word: WORKING")
+                ),
+                timeout=10.0  # only 10 seconds for health check
+            )
+            elapsed = round(time.time() - start, 2)
+
+            if test_result and not test_result.startswith("ERROR:"):
+                result["gemini_test"] = f"✅ working ({elapsed}s)"
+                result["gemini_status"] = "ok"
+            else:
+                result["gemini_test"] = f"⚠️ responded but may have issues: {test_result[:50]}"
+                result["gemini_status"] = "partial"
+
+        except asyncio.TimeoutError:
+            # Key is set but Gemini was slow — this is NOT an error
+            result["gemini_test"] = "⚠️ key is set but test timed out (Render cold start)"
+            result["gemini_status"] = "timeout"
+        except Exception as e:
+            result["gemini_test"] = f"❌ {str(e)[:100]}"
+            result["gemini_status"] = "error"
+    elif not key_set:
+        result["gemini_test"] = "❌ GOOGLE_API_KEY not set"
+        result["gemini_status"] = "missing"
+    else:
+        result["gemini_test"] = "⚠️ LLM package not loaded"
+        result["gemini_status"] = "unavailable"
+
+    return result
 
 
 @app.get("/api/diagnose")

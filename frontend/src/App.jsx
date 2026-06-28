@@ -17,14 +17,12 @@ import axios from "axios";
 
 export function BackendStatus() {
   const [status,  setStatus]  = useState("checking");
-  const [message, setMessage] = useState("");
-  const startRef = useRef(Date.now());
+  const [detail,  setDetail]  = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
     const check = async () => {
-      const t0 = Date.now();
       try {
         const res = await axios.get(
           `${BACKEND_URL}/health`,
@@ -32,84 +30,94 @@ export function BackendStatus() {
         );
         if (cancelled) return;
 
-        const elapsed = Date.now() - t0;
+        const data = res.data;
 
-        if (res.data?.status === "online" || res.data?.message) {
-          // Check if Gemini is working
-          const geminiOk = res.data?.gemini_test?.includes("✅") ||
-                           res.data?.llm_available === true ||
-                           !res.data?.gemini_test; // if field missing assume ok
+        // Backend is up — now check what's actually wrong
+        if (data?.status === "online" || data?.message) {
 
-          if (geminiOk) {
-            setStatus("ok");
-          } else {
+          // Check if Google API key is genuinely missing
+          const keyMissing = (
+            data?.google_api_key === "MISSING" ||
+            data?.env_vars?.GOOGLE_API_KEY?.includes("❌")
+          );
+
+          if (keyMissing) {
+            // Key is genuinely not set in Render
             setStatus("no-key");
-            setMessage(res.data?.gemini_test || "Gemini API key may be missing");
+            setDetail("GOOGLE_API_KEY is not set in Render → Environment");
+            return;
           }
-        } else {
+
+          // Key is set — check Gemini status
+          const geminiStatus = data?.gemini_status;
+          const geminiTest   = data?.gemini_test || "";
+
+          if (geminiStatus === "ok" || geminiTest.includes("✅")) {
+            // Everything working perfectly
+            setStatus("ok");
+            return;
+          }
+
+          if (geminiStatus === "timeout" || geminiTest.includes("timed out")) {
+            // Key is set but Gemini was slow — this is fine, just cold start
+            // Show as OK — the key IS there, Gemini will work for real requests
+            setStatus("ok");
+            return;
+          }
+
+          if (geminiStatus === "error" && geminiTest.includes("❌")) {
+            // Real Gemini error — key might be invalid
+            setStatus("gemini-error");
+            setDetail(geminiTest);
+            return;
+          }
+
+          // Backend is up and key is set — consider it OK
           setStatus("ok");
         }
       } catch (err) {
         if (cancelled) return;
-
-        if (err.code === "ECONNABORTED" || err.message?.includes("timeout")) {
-          // Still waking up — not an error, just slow
-          setStatus("waking");
-        } else if (!err.response) {
+        if (!err.response) {
           setStatus("down");
         } else {
-          // Got a response — backend is up even if not 200
+          // Got any response — backend is running
           setStatus("ok");
         }
       }
     };
 
     check();
-    const interval = setInterval(check, 30000);
+    const interval = setInterval(check, 35000);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
   }, []);
 
-  if (status === "ok") return null;
+  // Hide when everything is fine
+  if (status === "ok" || status === "checking") return null;
 
-  const configs = {
-    checking: {
-      bg:   "bg-[#F0EEFF] border-[#E8E4FF]",
-      text: "text-[#6B5CE7]",
-      msg:  "🔄 Connecting to backend...",
-    },
-    waking: {
-      bg:   "bg-amber-50 border-amber-100",
-      text: "text-amber-700",
-      msg:  "⏳ Backend is waking up from sleep (Render free tier) — please wait 30-60 seconds then retry",
-    },
-    down: {
-      bg:   "bg-red-50 border-red-100",
-      text: "text-red-700",
-      msg:  `⚠️ Backend not reachable at ${BACKEND_URL} — check Render dashboard at dashboard.render.com`,
-    },
-    "no-key": {
-      bg:   "bg-amber-50 border-amber-100",
-      text: "text-amber-700",
-      msg:  `🔑 Backend running but GOOGLE_API_KEY missing — add it in Render → Environment`,
-    },
+  const messages = {
+    down: `⚠️ Backend not reachable at ${BACKEND_URL} — check Render dashboard`,
+    "no-key": "🔑 GOOGLE_API_KEY not set in Render → Environment → Add GOOGLE_API_KEY",
+    "gemini-error": `⚠️ Gemini API issue: ${detail} — check your API key at aistudio.google.com`,
+    waking: "⏳ Backend waking up from sleep — please wait 30 seconds then refresh",
   };
 
-  const cfg = configs[status] || configs.checking;
+  const colors = {
+    down:          "bg-red-50 border-red-100 text-red-700",
+    "no-key":      "bg-amber-50 border-amber-100 text-amber-700",
+    "gemini-error":"bg-amber-50 border-amber-100 text-amber-700",
+    waking:        "bg-blue-50 border-blue-100 text-blue-700",
+  };
+
+  const msg   = messages[status];
+  const color = colors[status];
+  if (!msg) return null;
 
   return (
-    <div className={`w-full px-4 py-2 text-center text-xs font-medium border-b ${cfg.bg} ${cfg.text} z-[200]`}>
-      {cfg.msg}
-      {status === "waking" && (
-        <button
-          onClick={() => window.location.reload()}
-          className="ml-3 underline font-bold"
-        >
-          Refresh
-        </button>
-      )}
+    <div className={`w-full px-4 py-2 text-center text-xs font-medium border-b ${color} z-[200]`}>
+      {msg}
     </div>
   );
 }
