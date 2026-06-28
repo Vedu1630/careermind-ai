@@ -337,6 +337,7 @@ async def diagnose():
     return results
 
 # ── Upload Resume ──────────────────────────────────────────────────
+@app.post("/upload-resume")
 @app.post("/api/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
     try:
@@ -350,14 +351,15 @@ async def upload_resume(file: UploadFile = File(...)):
         raise HTTPException(500, f"Upload failed: {e}")
 
 # ── Analyze Resume ─────────────────────────────────────────────────
+@app.post("/analyze")
 @app.post("/api/analyze")
 async def analyze_resume(request: dict):
-    path    = request.get("resume_path", "")
-    job_desc = request.get("job_description", "")
-    user_id = request.get("user_id", "anon")
+    path    = request.get("file_path") or request.get("resume_path") or ""
+    job_desc = request.get("job_description") or request.get("job_query") or ""
+    user_id = request.get("user_id") or request.get("user_id", "anon")
 
     if not path or not os.path.exists(path):
-        raise HTTPException(404, f"Resume not found: {path}")
+        raise HTTPException(404, f"Resume not found at path: {path}")
 
     text = extract_pdf_text(path)
     if not text or len(text) < 20:
@@ -471,15 +473,16 @@ async def get_jobs(
     return {"jobs": jobs, "count": len(jobs), "source": jobs[0].get("source","demo") if jobs else "none"}
 
 # ── Rewrite Resume ─────────────────────────────────────────────────
+@app.post("/rewrite")
 @app.post("/api/rewrite")
 async def rewrite_resume(request: dict):
-    path      = request.get("resume_path","")
+    path      = request.get("file_path") or request.get("resume_path") or ""
     job       = request.get("job", {})
     job_title = job.get("title","Software Engineer")
     job_desc  = (job.get("description") or "")[:500]
 
     if not path or not os.path.exists(path):
-        raise HTTPException(404, f"Resume not found: {path}")
+        raise HTTPException(404, f"Resume not found at path: {path}")
 
     text = _cache.get(f"text:{path}") or extract_pdf_text(path)
 
@@ -518,6 +521,7 @@ async def rewrite_resume(request: dict):
     }
 
 # ── Download PDF ───────────────────────────────────────────────────
+@app.post("/rewrite/download-pdf")
 @app.post("/api/rewrite/download-pdf")
 async def download_pdf(request: dict):
     rewritten = request.get("rewritten_text","")
