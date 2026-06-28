@@ -378,15 +378,27 @@ async def analyze_resume(request: dict):
     if not text or len(text) < 20:
         raise HTTPException(422, "Cannot extract text from PDF. Ensure it is not a scanned image.")
 
+    from utils.ats_scorer import calculate_real_ats_score
+    ats_data = calculate_real_ats_score(text, job_desc)
+    real_ats_score = ats_data["ats_score"]
+
     prompt = (
-        f"Analyze this resume and return ONLY valid JSON, no markdown.\n"
-        f"Resume: {text[:2000]}\n"
-        f"Job description: {job_desc[:300] or 'not provided'}\n\n"
-        f"Return exactly:\n"
-        f'{{"skills_found":["Python","React"],"skill_gaps":["Docker"],'
-        f'"experience_level":"junior","overall_score":72,"ats_score":68,'
-        f'"sections_detected":["Education","Experience"],'
-        f'"suggestions":["Add metrics to bullets"]}}'
+        f"You are an expert resume analyst. A deterministic ATS scanner has already scored this resume.\n"
+        f"Your job is to provide QUALITATIVE feedback only — do NOT invent or change the ATS score.\n\n"
+        f"DETERMINISTIC ATS SCORE (use this exactly): {real_ats_score}/100\n"
+        f"Score breakdown: {ats_data['score_breakdown']}\n"
+        f"Missing keywords: {ats_data['missing_keywords'][:10]}\n"
+        f"Missing sections: {ats_data['missing_sections']}\n"
+        f"Issues found: {ats_data['feedback']}\n\n"
+        f"Resume text:\n{text[:2000]}\n\n"
+        f"Provide exactly this JSON:\n"
+        f'{{"overall_score": 75,'
+        f'"ats_score": {real_ats_score},'
+        f'"skills_found": ["Python","React"],'
+        f'"skill_gaps": ["Docker"],'
+        f'"suggestions": ["Add metrics to bullets"],'
+        f'"experience_level": "junior",'
+        f'"summary": "Honest 2-sentence summary."}}'
     )
 
     raw    = await call_gemini_async(prompt, timeout=30.0)
@@ -395,11 +407,20 @@ async def analyze_resume(request: dict):
         "skill_gaps":        [],
         "experience_level":  "junior",
         "overall_score":     55,
-        "ats_score":         55,
-        "sections_detected": [],
-        "suggestions":       ["Could not analyze — check API key"],
+        "ats_score":         real_ats_score,
+        "suggestions":       ["Could not analyze qualitatively — check API key"],
+        "summary":           "Holistic assessment unavailable.",
     })
+
+    result["ats_score"] = real_ats_score
+    result["ats_breakdown"] = ats_data["score_breakdown"]
+    result["found_keywords"] = ats_data["found_keywords"]
+    result["missing_keywords"] = ats_data["missing_keywords"]
+    result["missing_sections"] = ats_data["missing_sections"]
+    result["feedback"] = ats_data["feedback"]
+    result["grade"] = ats_data["grade"]
     result["resume_text"] = text
+
     _cache[f"analysis:{user_id}"] = result
     _cache[f"text:{path}"]        = text
     return result
@@ -499,12 +520,28 @@ async def rewrite_resume(request: dict):
 
     text = _cache.get(f"text:{path}") or extract_pdf_text(path)
 
+    # 1. Calculate original ATS score and extract missing keywords
+    from utils.ats_scorer import calculate_real_ats_score
+    orig_ats_data = calculate_real_ats_score(text, job_desc)
+    orig_ats_score = orig_ats_data["ats_score"]
+    missing_keywords = orig_ats_data["missing_keywords"]
+
+    # 2. Instruct the LLM to inject these missing keywords
     prompt = (
-        f"Rewrite this resume to better match the job. RULES: keep all facts true, "
-        f"add job keywords naturally, keep same structure and line count, "
-        f"return ONLY the rewritten resume text, no explanation.\n\n"
-        f"Resume:\n{text[:2200]}\n\n"
-        f"Job: {job_title}\nDescription: {job_desc}"
+        f"You are an expert ATS resume optimizer. Your job is to rewrite this resume to maximize "
+        f"ATS score for the target role. You MUST make real, substantial changes.\n\n"
+        f"TARGET ROLE: {job_title}\n"
+        f"JOB DESCRIPTION: {job_desc}\n\n"
+        f"CURRENT ATS SCORE: {orig_ats_score}%\n"
+        f"KEYWORDS CURRENTLY MISSING FROM RESUME: {missing_keywords[:15]}\n"
+        f"CURRENT ISSUES: {orig_ats_data['feedback']}\n\n"
+        f"ORIGINAL RESUME:\n{text[:2200]}\n\n"
+        f"REWRITING RULES:\n"
+        f"1. Add AT LEAST 5-10 of the missing keywords naturally into the resume\n"
+        f"2. Quantify at least 3 achievements with numbers (if not already done)\n"
+        f"3. Ensure all sections are clearly labeled: Contact, Summary, Skills, Experience, Education, Projects\n"
+        f"4. Do NOT fabricate experience or companies — only enhance what exists\n"
+        f"5. Keep the exact same structure and line count, return ONLY the rewritten resume text, no markdown, no comments, no JSON wrappers."
     )
     rewritten = await call_gemini_async(prompt, timeout=35.0)
 
@@ -515,22 +552,30 @@ async def rewrite_resume(request: dict):
     for p in [r"\[Email\]",r"\[LinkedIn\]",r"\[GitHub\]",r"\[Phone\]",r"\[URL\]"]:
         rewritten = re.sub(p, "", rewritten, flags=re.IGNORECASE)
 
+    # 3. Recalculate ATS score deterministically on rewritten text
+    new_ats_data = calculate_real_ats_score(rewritten, job_desc)
+    new_ats_score = new_ats_data["ats_score"]
+
+    # Deduce actually added keywords
     jw = set(w.lower() for w in job_desc.split() if len(w)>5)
     ow = set(text.lower().split())
     nw = set(rewritten.lower().split())
     kw = list((jw & nw) - ow)[:12]
 
-    oh = sum(1 for k in jw if k in text.lower())
-    nh = sum(1 for k in jw if k in rewritten.lower())
-    oa = round(oh/max(len(jw),1)*100,1)
-    na = round(nh/max(len(jw),1)*100,1)
-
     return {
         "original_text":   text,
         "rewritten_text":  rewritten,
         "keywords_added":  kw,
-        "changes_summary": [f"Added {len(kw)} keywords","Improved ATS score","Preserved structure"],
-        "ats_scores":      {"original":oa,"rewritten":na,"improvement":round(na-oa,1)},
+        "changes_summary": [
+            f"Added {len(kw)} ATS keywords from job description",
+            "Quantified achievements with realistic metrics",
+            "Preserved original formatting and layout",
+        ],
+        "ats_scores": {
+            "original":    orig_ats_score,
+            "rewritten":   new_ats_score,
+            "improvement": round(new_ats_score - orig_ats_score, 1),
+        },
     }
 
 # ── Download PDF ───────────────────────────────────────────────────

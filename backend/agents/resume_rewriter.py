@@ -4,6 +4,7 @@ import asyncio
 from typing import Optional, Callable
 from core.singletons import get_llm, call_gemini_async
 from tools.pdf_tool import pdf_handler
+from utils.ats_scorer import calculate_real_ats_score
 
 async def rewrite_resume(
     resume_path: str,
@@ -22,10 +23,22 @@ async def rewrite_resume(
     job_title     = job.get("title", "Software Engineer")
     job_desc      = (job.get("description") or "")[:500]
 
-    prompt = f"""You are a professional resume editor. Rewrite this resume to improve ATS score for the target job.
+    # Calculate initial ATS score deterministically
+    orig_ats_data = calculate_real_ats_score(original_text, job_desc)
+    orig_ats_score = orig_ats_data["ats_score"]
+    missing_keywords = orig_ats_data["missing_keywords"]
+
+    prompt = f"""You are an expert ATS resume optimizer. Your job is to rewrite this resume to maximize 
+ATS score for the target role. You MUST make real, substantial changes.
+
+TARGET ROLE: {job_title}
+JOB DESCRIPTION: {job_desc}
+
+CURRENT ATS SCORE: {orig_ats_score}% 
+KEYWORDS CURRENTLY MISSING FROM RESUME: {missing_keywords[:15]}
+CURRENT ISSUES: {orig_ats_data['feedback']}
 
 ABSOLUTE RULES — BREAKING ANY OF THESE WILL CORRUPT THE PDF:
-
 1. Output the EXACT same number of lines as the input — count them before responding
 2. NEVER add placeholder text like [Email], [LinkedIn], [GitHub], [Phone], [URL], [Website] — these will appear in the PDF and look broken
 3. NEVER change section header text — Education, Experience, Projects, Certifications, Core Skills, Achievements must stay word-for-word
@@ -33,17 +46,13 @@ ABSOLUTE RULES — BREAKING ANY OF THESE WILL CORRUPT THE PDF:
 5. NEVER change bullet point markers — keep • exactly as-is
 6. NEVER merge two lines into one or split one line into two
 7. NEVER change the bold/italic formatting markers — keep bold labels bold
-8. ONLY improve: bullet point descriptions, project descriptions — add keywords, quantify achievements
-9. All added metrics must be plausible — do not invent impossible numbers
-10. Return ONLY the resume text — no explanation, no preamble, no markdown
+8. Add AT LEAST 5-10 of the missing keywords naturally into bullet descriptions, project descriptions
+9. Quantify at least 3 achievements with numbers (if not already done)
+10. Return ONLY the rewritten resume text — no explanation, no preamble, no markdown, no JSON wrappers.
 
 Original Resume (count the lines — your output must have the same count):
 {original_text[:2500]}
-
-Target Job: {job_title}
-Job Keywords to incorporate: {job_desc[:300]}
-
-Rewrite now — same line count, same structure, only description content changes:"""
+"""
 
     emit("Optimizing resume content with Gemini AI...")
     try:
@@ -72,17 +81,14 @@ Rewrite now — same line count, same structure, only description content change
     rewritten = re.sub(r'^\s*\|\s*', '', rewritten, flags=re.MULTILINE)
     rewritten = re.sub(r'\s*\|\s*$', '', rewritten, flags=re.MULTILINE)
 
+    # Recalculate ATS score deterministically
+    new_ats_data = calculate_real_ats_score(rewritten, job_desc)
+    new_ats_score = new_ats_data["ats_score"]
+
     job_words      = set(w.lower() for w in job_desc.split() if len(w) > 5)
     orig_words     = set(original_text.lower().split())
     new_words      = set(rewritten.lower().split())
     keywords_added = list((job_words & new_words) - orig_words)[:12]
-
-    # ATS scoring
-    jd_kw      = [w for w in job_words if len(w) > 4]
-    orig_hits  = sum(1 for k in jd_kw if k in original_text.lower())
-    new_hits   = sum(1 for k in jd_kw if k in rewritten.lower())
-    orig_ats   = round(orig_hits / max(len(jd_kw), 1) * 100, 1)
-    new_ats    = round(new_hits  / max(len(jd_kw), 1) * 100, 1)
 
     # Build the PDF preserving formatting
     emit("Rebuilding PDF with rewritten text...")
@@ -110,9 +116,9 @@ Rewrite now — same line count, same structure, only description content change
             "All names, dates, and facts kept unchanged",
         ],
         "ats_scores": {
-            "original":    orig_ats,
-            "rewritten":   new_ats,
-            "improvement": round(new_ats - orig_ats, 1),
+            "original":    orig_ats_score,
+            "rewritten":   new_ats_score,
+            "improvement": round(new_ats_score - orig_ats_score, 1),
         },
     }
 

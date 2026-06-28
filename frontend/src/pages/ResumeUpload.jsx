@@ -442,6 +442,67 @@ export default function ResumeUpload() {
                     </div>
                   </motion.div>
                 )}
+
+                {/* ATS Score Breakdown */}
+                {analysisData?.ats_breakdown && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    className="mt-4 p-4 bg-[#FAFAFF] border border-[#E8E4FF] rounded-xl"
+                  >
+                    <div className="text-[11px] font-bold text-[#BBB] tracking-widest uppercase mb-3">
+                      ATS Score Breakdown
+                    </div>
+                    <div className="space-y-3">
+                      {[
+                        { label: "Keyword Match", score: analysisData.ats_breakdown.keywords, max: 40, color: "bg-[#8B7CF8]" },
+                        { label: "Required Sections", score: analysisData.ats_breakdown.sections, max: 25, color: "bg-[#6B5CE7]" },
+                        { label: "Quantified Achievements", score: analysisData.ats_breakdown.quantification, max: 20, color: "bg-[#22C55E]" },
+                        { label: "Format Quality", score: analysisData.ats_breakdown.format, max: 15, color: "bg-orange-400" },
+                      ].map(({ label, score, max, color }) => (
+                        <div key={label}>
+                          <div className="flex justify-between text-xs mb-1">
+                            <span className="text-[#555]">{label}</span>
+                            <span className="font-semibold text-[#111]">{score}/{max}</span>
+                          </div>
+                          <div className="h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${(score / max) * 100}%` }}
+                              transition={{ duration: 0.8, ease: "easeOut" }}
+                              className={`h-full rounded-full ${color}`}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Missing keywords */}
+                    {analysisData.missing_keywords?.length > 0 && (
+                      <div className="mt-4 border-t border-[#F0EEFF] pt-3">
+                        <p className="text-xs font-semibold text-red-500 mb-2 flex items-center gap-1">
+                          ⚠️ Missing Keywords ({analysisData.missing_keywords.length})
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {analysisData.missing_keywords.slice(0, 12).map(kw => (
+                            <span key={kw} className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-100">
+                              {kw}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ATS feedback */}
+                    {analysisData.feedback?.length > 0 && (
+                      <div className="mt-3 border-t border-[#F0EEFF] pt-2 space-y-1">
+                        {analysisData.feedback.map((f, i) => (
+                          <p key={i} className="text-[11px] text-[#555]">• {f}</p>
+                        ))}
+                      </div>
+                    )}
+                  </motion.div>
+                )}
               </div>
 
               {/* Skills found */}

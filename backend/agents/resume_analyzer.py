@@ -6,6 +6,7 @@ import logging
 import PyPDF2
 from langchain.prompts import ChatPromptTemplate
 from core.singletons import get_llm, get_skills_retriever, get_cache, call_gemini_async
+from utils.ats_scorer import calculate_real_ats_score
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,11 @@ async def analyze_resume(file_path: str, user_id: str = "anonymous", progress_ca
         emit("⚡ Resume analysis cache hit")
         return cache[cache_key]
 
+    # Calculate real ATS score deterministically
+    emit("Scanning resume layout and formatting...")
+    ats_data = calculate_real_ats_score(resume_text, "")
+    real_ats_score = ats_data["ats_score"]
+
     # Truncate to first 2500 chars for speed
     resume_truncated = resume_text[:2500]
 
@@ -76,17 +82,41 @@ async def analyze_resume(file_path: str, user_id: str = "anonymous", progress_ca
     emit("Analyzing resume with Gemini AI...")
     try:
         formatted_prompt = f"""
-Analyze this resume. Return ONLY valid JSON, no markdown.
+You are an expert resume analyst. A deterministic ATS scanner has already scored this resume.
+Your job is to provide QUALITATIVE feedback only — do NOT invent or change the ATS score.
 
-Resume: {resume_truncated}
-Industry skills context: {skills_context}
+DETERMINISTIC ATS SCORE (use this exactly): {real_ats_score}/100
+Score breakdown: {ats_data['score_breakdown']}
+Missing keywords: {ats_data['missing_keywords'][:10]}
+Missing sections: {ats_data['missing_sections']}
+Issues found: {ats_data['feedback']}
 
-Return this exact JSON:
-{{"skills_found":["skill1","skill2"],"skill_gaps":["gap1","gap2"],"experience_level":"junior|mid|senior","overall_score":75,"ats_score":70,"sections_detected":["Education","Experience"],"suggestions":["tip1","tip2"],"strengths":["str1","str2"],"keywords_missing":["kw1","kw2"],"format_issues":["issue1"]}}
+Resume text:
+{resume_truncated}
+
+Provide:
+1. overall_score: integer 0-100 (your holistic assessment of resume quality)
+2. ats_score: integer — USE EXACTLY {real_ats_score} (do not change this)
+3. skills_found: list of skills you can identify
+4. skill_gaps: list of important skills missing for a tech role  
+5. suggestions: 3-5 specific, actionable bullet points to improve the resume
+6. experience_level: "junior" | "mid" | "senior"
+7. summary: 2-sentence honest assessment
+8. sections_detected: list of detected sections
+9. strengths: list of resume strengths
+10. keywords_missing: list of missing keywords
+
+Return ONLY valid JSON, no markdown.
 """
         raw_output = await call_gemini_async(formatted_prompt)
         cleaned = re.sub(r"```json|```", "", raw_output).strip()
         parsed = json.loads(cleaned)
+        parsed["ats_breakdown"] = ats_data["score_breakdown"]
+        parsed["feedback"] = ats_data["feedback"]
+        parsed["grade"] = ats_data["grade"]
+        parsed["found_keywords"] = ats_data["found_keywords"]
+        parsed["missing_keywords"] = ats_data["missing_keywords"]
+        parsed["missing_sections"] = ats_data["missing_sections"]
         parsed["resume_text"] = resume_text  # store for rewriter
         cache[cache_key] = parsed
         emit("Analysis complete!")
