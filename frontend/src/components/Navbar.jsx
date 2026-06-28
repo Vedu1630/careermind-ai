@@ -20,6 +20,7 @@ const navLinks = [
   { to: '/rewrite', label: 'Rewrite', icon: FileEdit },
   { to: '/interview', label: 'Interview', icon: Mic },
   { to: '/daily-coach', label: 'Daily Coach', icon: Flame, isDailyCoach: true },
+  { to: '/status', label: 'Agent Status', icon: Activity },
 ]
 
 export default function Navbar() {

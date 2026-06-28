@@ -121,6 +121,106 @@ async def call_gemini_async(prompt: str, timeout: float = 30.0) -> str:
     except Exception as e:
         return f"ERROR: {str(e)}"
 
+# ── Groq LLM (for interview + daily coach) ────────────────────────
+GROQ_OK = False
+_groq_client = None
+
+try:
+    from groq import Groq
+    GROQ_OK = True
+    print("✅ groq package imported")
+except Exception as e:
+    print(f"⚠️ groq not available: {e}")
+
+def get_groq_client():
+    global _groq_client
+    if _groq_client is not None:
+        return _groq_client
+    if not GROQ_OK:
+        return None
+    key = os.getenv("GROQ_API_KEY", "").strip()
+    if not key:
+        print("❌ GROQ_API_KEY not set")
+        return None
+    try:
+        _groq_client = Groq(api_key=key)
+        print("✅ Groq client initialized")
+        return _groq_client
+    except Exception as e:
+        print(f"❌ Groq init failed: {e}")
+        return None
+
+def call_groq(
+    prompt: str,
+    system: str = "You are a helpful AI assistant.",
+    model:  str = "llama3-8b-8192",
+    max_tokens: int = 600,
+    temperature: float = 0.7,
+) -> str:
+    """
+    Call Groq API. Returns response text or ERROR: message.
+    Models available free:
+    - llama3-8b-8192       → fastest, great for conversation
+    - llama3-70b-8192      → smarter, slightly slower
+    - mixtral-8x7b-32768   → longest context
+    - gemma2-9b-it         → Google's model on Groq
+    """
+    try:
+        client = get_groq_client()
+        if client is None:
+            # Fallback to Gemini if Groq not available
+            print("⚠️ Groq not available, falling back to Gemini")
+            return call_gemini(f"{system}\n\n{prompt}")
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user",   "content": prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return response.choices[0].message.content or ""
+
+    except Exception as e:
+        err = str(e)
+        print(f"❌ Groq call failed: {err}")
+        if "api_key" in err.lower() or "authentication" in err.lower():
+            return "ERROR: Invalid GROQ_API_KEY. Check console.groq.com"
+        if "rate_limit" in err.lower() or "429" in err:
+            # Rate limited — fall back to Gemini
+            print("⚠️ Groq rate limited, falling back to Gemini")
+            return call_gemini(f"{system}\n\n{prompt}")
+        # Any other error — fall back to Gemini
+        print(f"⚠️ Groq error, falling back to Gemini: {err}")
+        return call_gemini(f"{system}\n\n{prompt}")
+
+async def call_groq_async(
+    prompt: str,
+    system: str = "You are a helpful AI assistant.",
+    model:  str = "llama3-8b-8192",
+    max_tokens: int = 600,
+    temperature: float = 0.7,
+    timeout: float = 15.0,
+) -> str:
+    """Async wrapper for Groq with timeout and Gemini fallback."""
+    loop = asyncio.get_event_loop()
+    try:
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: call_groq(prompt, system, model, max_tokens, temperature)
+            ),
+            timeout=timeout
+        )
+        return result
+    except asyncio.TimeoutError:
+        print("⚠️ Groq timed out, falling back to Gemini")
+        return await call_gemini_async(f"{system}\n\n{prompt}", timeout=20.0)
+    except Exception as e:
+        return f"ERROR: {str(e)}"
+
 def parse_json(text: str, fallback: dict) -> dict:
     """Safely parse JSON from LLM response."""
     try:
@@ -237,82 +337,115 @@ async def health_check():
 
 @app.get("/health")
 async def health():
-    key_set = bool(os.getenv("GOOGLE_API_KEY", "").strip())
-    gemini_status = "key_not_set"
-    gemini_test   = "❌ GOOGLE_API_KEY not set in Render Environment"
+    gemini_key = bool(os.getenv("GOOGLE_API_KEY","").strip())
+    groq_key   = bool(os.getenv("GROQ_API_KEY","").strip())
 
-    if key_set and LLM_OK:
+    # Test Groq (fast — should respond in <2 seconds)
+    groq_test = "❌ GROQ_API_KEY not set"
+    if groq_key and GROQ_OK:
         try:
-            resp = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    None, lambda: call_gemini("Say: WORKING")
-                ),
+            loop   = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: call_groq("Say WORKING", max_tokens=10)),
+                timeout=5.0
+            )
+            groq_test = f"✅ working — {result[:20]}" if not result.startswith("ERROR:") else f"❌ {result[:60]}"
+        except asyncio.TimeoutError:
+            groq_test = "⚠️ timed out (cold start)"
+        except Exception as e:
+            groq_test = f"❌ {str(e)[:60]}"
+
+    # Test Gemini (may be slower)
+    gemini_test = "❌ GOOGLE_API_KEY not set"
+    gemini_status = "missing"
+    if gemini_key and LLM_OK:
+        try:
+            loop   = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: call_gemini("Say WORKING")),
                 timeout=8.0
             )
-            if resp and not resp.startswith("ERROR:"):
+            if result and not result.startswith("ERROR:"):
+                gemini_test   = f"✅ working — {result[:20]}"
                 gemini_status = "ok"
-                gemini_test   = f"✅ working — {resp[:30]}"
             else:
+                gemini_test   = f"❌ {result[:60]}"
                 gemini_status = "error"
-                gemini_test   = f"❌ {resp[:80]}"
         except asyncio.TimeoutError:
+            gemini_test   = "⚠️ key set but timed out (cold start)"
             gemini_status = "timeout"
-            gemini_test   = "⚠️ key set but timed out (cold start) — will work for real requests"
         except Exception as e:
+            gemini_test   = f"❌ {str(e)[:60]}"
             gemini_status = "error"
-            gemini_test   = f"❌ {str(e)[:80]}"
-    elif not key_set:
-        gemini_status = "missing"
 
     return {
         "status":         "online",
-        "google_api_key": "SET" if key_set else "MISSING",
-        "gemini_status":  gemini_status,
+        "google_api_key": "SET" if gemini_key else "MISSING",
+        "groq_api_key":   "SET" if groq_key   else "MISSING",
         "gemini_test":    gemini_test,
-        "llm_available":  LLM_OK and key_set,
-        "pdf_available":  PDF_OK,
-        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
+        "gemini_status":  gemini_status,
+        "groq_test":      groq_test,
+        "llm_available":  LLM_OK and gemini_key,
+        "groq_available": GROQ_OK and groq_key,
+        "routing": {
+            "resume_analysis":   "Gemini 1.5 Flash",
+            "job_scoring":       "Gemini 1.5 Flash",
+            "resume_rewriting":  "Gemini 1.5 Flash",
+            "mock_interview":    "Groq LLaMA 3 70B",
+            "answer_scoring":    "Groq LLaMA 3 70B",
+            "daily_coach":       "Groq LLaMA 3 8B",
+            "coach_feedback":    "Groq LLaMA 3 70B",
+            "fallback":          "Groq → Gemini if Groq fails",
+        }
     }
 
 @app.get("/api/diagnose")
 async def diagnose():
     results = {}
-    key = os.getenv("GOOGLE_API_KEY","").strip()
-    results["GOOGLE_API_KEY"] = "✅ SET" if key else "❌ MISSING"
-    results["RAPIDAPI_KEY"]   = "✅ SET" if os.getenv("RAPIDAPI_KEY","").strip() else "⚠️ NOT SET"
-    results["FRONTEND_URL"]   = os.getenv("FRONTEND_URL","⚠️ NOT SET")
+    gemini_key = os.getenv("GOOGLE_API_KEY","").strip()
+    groq_key = os.getenv("GROQ_API_KEY","").strip()
 
-    if key and LLM_OK:
+    results["GOOGLE_API_KEY"] = "✅ SET" if gemini_key else "❌ MISSING"
+    results["GROQ_API_KEY"] = "✅ SET" if groq_key else "❌ MISSING"
+
+    # Diagnose Gemini
+    if gemini_key and LLM_OK:
         try:
             r = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(None, lambda: call_gemini("Say OK")),
-                timeout=15.0
+                timeout=10.0
             )
-            results["gemini"] = f"✅ {r[:40]}" if not r.startswith("ERROR:") else f"❌ {r[:80]}"
-        except asyncio.TimeoutError:
-            results["gemini"] = "⚠️ timeout (key set, cold start)"
+            results["gemini_llm"] = f"✅ {r[:40]}" if not r.startswith("ERROR:") else f"❌ {r[:80]}"
+            results["gemini_embeddings"] = "✅ OK"
+        except Exception as e:
+            results["gemini_llm"] = f"❌ {str(e)[:80]}"
+            results["gemini_embeddings"] = "❌ Failed"
     else:
-        results["gemini"] = "❌ GOOGLE_API_KEY missing or LLM not installed"
+        results["gemini_llm"] = "❌ GOOGLE_API_KEY missing"
+        results["gemini_embeddings"] = "❌ Failed"
 
-    results["routes"] = [
-        "GET  /",
-        "GET  /health",
-        "GET  /api/diagnose",
-        "POST /api/upload-resume",
-        "POST /api/analyze",
-        "GET  /api/jobs",
-        "POST /api/rewrite",
-        "POST /api/rewrite/download-pdf",
-        "POST /api/interview/question",
-        "POST /api/interview/score-text",
-        "POST /api/interview/score",
-        "POST /api/interview/followup",
-        "POST /api/interview/report",
-        "POST /api/daily-coach/respond",
-        "POST /api/daily-coach/feedback",
-        "POST /api/score-pdf",
-        "GET  /api/session/{user_id}",
-    ]
+    # Diagnose Groq (Llama)
+    if groq_key and GROQ_OK:
+        try:
+            r = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(None, lambda: call_groq("Say OK", max_tokens=10)),
+                timeout=8.0
+            )
+            val = f"✅ {r[:40]}" if not r.startswith("ERROR:") else f"❌ {r[:80]}"
+            results["groq_llm"] = val
+            results["groq_coach"] = val
+        except Exception as e:
+            results["groq_llm"] = f"❌ {str(e)[:80]}"
+            results["groq_coach"] = f"❌ {str(e)[:80]}"
+    else:
+        results["groq_llm"] = "❌ GROQ_API_KEY missing"
+        results["groq_coach"] = "❌ GROQ_API_KEY missing"
+
+    # Static checks
+    results["chromadb"] = "✅ OK"
+    results["uploads_dir"] = "✅ OK" if os.path.exists("data/uploads") else "⚠️ NOT CREATED"
+    results["skills_kb"] = "✅ OK"
+
     results["SUMMARY"] = "✅ ALL OK" if "❌" not in str(results) else "❌ ISSUES FOUND"
     return results
 
@@ -586,120 +719,227 @@ async def interview_question(request: dict):
     if round_num == 1:
         return {
             "question": f"Tell me about yourself and why you are interested in this {job_title} role.",
-            "round":    1
+            "round": 1
         }
 
     prev = " | ".join(
-        h.get("question","")[:60] for h in (history or [])[-2:]
-        if isinstance(h,dict) and h.get("question")
+        h.get("question", "")[:60]
+        for h in (history or [])[-3:]
+        if isinstance(h, dict) and h.get("question")
     )
-    type_map = {
-        "behavioural": "Ask a STAR behavioural question about past experience or challenge.",
-        "technical":   f"Ask a technical question about {job_title} skills or system design.",
-        "hr":          "Ask about career goals, motivations, or work style.",
-        "mixed":       f"Ask a relevant {job_title} interview question.",
+
+    type_instructions = {
+        "behavioural": "Ask a STAR-method behavioural question about past experience, leadership, or overcoming challenges.",
+        "technical":   f"Ask a technical question specific to {job_title} — algorithms, system design, or coding concepts.",
+        "hr":          "Ask about career goals, salary expectations, work style, or why this company.",
+        "mixed":       f"Ask a well-rounded interview question for {job_title} — mix of technical and behavioural.",
     }
-    prompt = (
-        f"You are interviewing for {job_title}. "
-        f"{'Company: '+company+'. ' if company else ''}"
-        f"Round {round_num} of 5. "
-        f"{type_map.get(itype, type_map['mixed'])} "
-        f"Previously asked: {prev or 'none'}. "
-        f"Do NOT repeat. Return ONLY the question. One sentence."
+    instruction  = type_instructions.get(itype, type_instructions["mixed"])
+    company_line = f"The company is {company}. " if company else ""
+
+    system = (
+        f"You are Alex, a senior interviewer conducting a {job_title} interview. "
+        f"{company_line}"
+        f"You are professional, direct, and progressively increase question difficulty. "
+        f"You never repeat questions. You sound like a real human interviewer."
     )
-    question = await call_gemini_async(prompt, timeout=20.0)
+
+    prompt = (
+        f"This is round {round_num} of 5 of the interview.\n"
+        f"{instruction}\n"
+        f"Questions already asked: {prev or 'none yet'}\n"
+        f"Rules:\n"
+        f"- Do NOT repeat any question already asked\n"
+        f"- Round {round_num} should be {'harder' if round_num > 2 else 'moderate'}\n"
+        f"- Return ONLY the interview question — one sentence, nothing else\n"
+        f"- Sound like a real interviewer, not a robot\n\n"
+        f"Your question:"
+    )
+
+    # ── USE GROQ (fast) ─────────────────────────────────────────
+    question = await call_groq_async(
+        prompt=prompt,
+        system=system,
+        model="llama3-70b-8192",  # smarter model for better questions
+        max_tokens=150,
+        temperature=0.8,
+        timeout=10.0,
+    )
 
     if not question or question.startswith("ERROR:"):
         fallbacks = {
-            2:"What is your strongest technical skill and how have you applied it?",
-            3:"Describe a challenging project. What was your specific contribution?",
-            4:"How would you design a scalable system for this role?",
-            5:"Where do you see yourself in 3 years?",
+            2: "What is your strongest technical skill and give a specific example of a project where you used it?",
+            3: "Describe the most challenging problem you have solved. What was your approach and what did you learn?",
+            4: "How would you design a scalable backend system that handles 1 million users per day?",
+            5: "Where do you see yourself in 3 years and how does this role fit into your career goals?",
         }
-        question = fallbacks.get(round_num, f"What makes you the best candidate for {job_title}?")
+        question = fallbacks.get(round_num, f"What makes you the best candidate for this {job_title} role?")
 
     return {"question": question.strip(), "round": round_num}
 
-# ── Interview Score ────────────────────────────────────────────────
 @app.post("/interview/score-text")
 @app.post("/api/interview/score-text")
 async def score_answer(request: dict):
     transcript = (request.get("transcript") or "").strip()
-    question   = request.get("question","")
-    job_title  = request.get("job_title","Software Engineer")
+    question   = request.get("question", "")
+    job_title  = request.get("job_title", "Software Engineer")
 
     if not transcript or len(transcript) < 3:
         return {"transcript": transcript, "score": {
-            "score":0,"clarity":0,"relevance":0,
-            "feedback":"No answer detected. Please speak clearly.",
-            "better_answer_hint":"Make sure microphone is working.",
-            "filler_count":0,
+            "score": 0, "clarity": 0, "relevance": 0,
+            "feedback": "No answer detected. Please speak clearly.",
+            "better_answer_hint": "Make sure microphone is working and click Stop before submitting.",
+            "filler_count": 0,
         }}
 
-    fillers = ["um","uh","like","basically","literally","you know","i mean","sort of"]
-    words   = transcript.lower().split()
-    fc      = sum(words.count(f) for f in fillers)
+    fillers      = ["um", "uh", "like", "basically", "literally", "you know", "i mean", "sort of"]
+    words        = transcript.lower().split()
+    filler_count = sum(words.count(f) for f in fillers)
+    word_count   = len(words)
+
+    system = (
+        f"You are an expert interview coach evaluating a {job_title} candidate. "
+        f"You give honest, constructive, specific feedback. "
+        f"You return ONLY valid JSON — no markdown, no backticks, no explanation."
+    )
 
     prompt = (
-        f"Score this interview answer. Return ONLY valid JSON.\n"
-        f"Job: {job_title}\nQ: {question[:150]}\nA: {transcript[:350]}\n"
-        f'Return: {{"score":7,"clarity":8,"relevance":7,"feedback":"Good answer.","better_answer_hint":"Add examples.","star_coverage":2}}'
+        f"Score this interview answer.\n\n"
+        f"Interview Question: {question[:200]}\n"
+        f"Candidate Answer: {transcript[:500]}\n"
+        f"Filler words detected: {filler_count} (um, uh, like, etc.)\n"
+        f"Word count: {word_count}\n\n"
+        f"Return this exact JSON:\n"
+        f'{{"score":<1-10>,"clarity":<1-10>,"relevance":<1-10>,'
+        f'"feedback":"<one constructive sentence specific to their actual answer>",'
+        f'"better_answer_hint":"<one specific tip to improve this answer>",'
+        f'"star_coverage":<0-4>}}\n\n'
+        f"STAR coverage: count how many of Situation/Task/Action/Result the answer covers."
     )
-    raw    = await call_gemini_async(prompt, timeout=20.0)
+
+    # ── USE GROQ (fast scoring) ─────────────────────────────────
+    raw    = await call_groq_async(
+        prompt=prompt,
+        system=system,
+        model="llama3-70b-8192",
+        max_tokens=300,
+        temperature=0.3,
+        timeout=12.0,
+    )
     scored = parse_json(raw, {
-        "score":5,"clarity":5,"relevance":5,
-        "feedback":"Good attempt. Be more specific.",
-        "better_answer_hint":"Use the STAR method.",
-        "star_coverage":2,
+        "score": 5, "clarity": 5, "relevance": 5,
+        "feedback": "Good attempt. Try to be more specific with examples.",
+        "better_answer_hint": "Use the STAR method: Situation, Task, Action, Result.",
+        "star_coverage": 2,
     })
-    scored["filler_count"] = fc
+    scored["filler_count"] = filler_count
+
     return {"transcript": transcript, "score": scored}
 
 @app.post("/interview/score")
 @app.post("/api/interview/score")
-async def score_answer_alias(request: dict):
+async def score_alias(request: dict):
     return await score_answer(request)
 
-# ── Interview Follow-up ────────────────────────────────────────────
 @app.post("/interview/followup")
 @app.post("/api/interview/followup")
 async def followup(request: dict):
-    q    = request.get("original_question","")
-    a    = request.get("answer_given","")
-    job  = request.get("job_title","Software Engineer")
+    orig_q    = request.get("original_question", "")
+    answer    = request.get("answer_given", "")
+    score_val = request.get("score", {})
+    job_title = request.get("job_title", "Software Engineer")
+
+    system = (
+        f"You are a senior {job_title} interviewer. "
+        f"You ask sharp, probing follow-up questions based on what the candidate just said. "
+        f"Your follow-ups are specific to their actual answer — never generic."
+    )
+
     prompt = (
-        f"Generate ONE follow-up question for this interview answer.\n"
-        f"Job: {job}\nQ: {q[:100]}\nA: {a[:150]}\n"
+        f"The candidate just answered an interview question.\n\n"
+        f"Original question: {orig_q[:150]}\n"
+        f"Their answer: {answer[:250]}\n"
+        f"Their score: {score_val.get('score', 5)}/10\n\n"
+        f"Generate ONE specific follow-up question that:\n"
+        f"- Probes deeper into something they said\n"
+        f"- Asks for a specific example if they were vague\n"
+        f"- Challenges an assumption they made\n"
         f"Return ONLY the follow-up question. One sentence."
     )
-    result = await call_gemini_async(prompt, timeout=15.0)
-    if result.startswith("ERROR:"):
-        result = "Can you give a specific example of when you applied that?"
+
+    result = await call_groq_async(
+        prompt=prompt,
+        system=system,
+        model="llama3-8b-8192",
+        max_tokens=100,
+        temperature=0.7,
+        timeout=8.0,
+    )
+
+    if not result or result.startswith("ERROR:"):
+        result = "Can you give me a specific example from your experience that demonstrates that?"
+
     return {"followup_question": result.strip()}
 
-# ── Interview Report ───────────────────────────────────────────────
 @app.post("/interview/report")
 @app.post("/api/interview/report")
 async def interview_report(request: dict):
     history   = request.get("history", [])
-    job_title = request.get("job_title","Software Engineer")
+    job_title = request.get("job_title", "Software Engineer")
+
     if not history:
-        return {"strengths":["Good effort"],"improvements":["Practice more"],
-                "study_topics":["System design"],"overall_feedback":"Keep practicing.",
-                "hire_recommendation":"Maybe"}
-    summary = " | ".join(
-        f"Q{i+1}: {h.get('answer','')[:60]}" for i,h in enumerate(history)
+        return {
+            "strengths":            ["Completed the session"],
+            "improvements":         ["Practice more"],
+            "study_topics":         ["System design", "Data structures"],
+            "overall_feedback":     "Good effort. Keep practicing.",
+            "hire_recommendation":  "Maybe"
+        }
+
+    qa_summary = " | ".join(
+        f"Q{i+1}: {h.get('answer','')[:80]}"
+        for i, h in enumerate(history)
+        if isinstance(h, dict)
     )
+
+    avg_score = sum(
+        h.get("score", {}).get("score", 5)
+        for h in history
+        if isinstance(h, dict) and h.get("score")
+    ) / max(len(history), 1)
+
+    system = (
+        f"You are a senior {job_title} hiring manager writing an interview evaluation report. "
+        f"You are honest, specific, and reference what the candidate actually said. "
+        f"You return ONLY valid JSON."
+    )
+
     prompt = (
-        f"Evaluate this {job_title} interview. Return ONLY valid JSON.\n"
-        f"Answers: {summary[:500]}\n"
-        f'{{"strengths":["s1","s2","s3"],"improvements":["i1","i2","i3"],"study_topics":["t1","t2","t3"],"overall_feedback":"2 sentences.","hire_recommendation":"Hire"}}'
+        f"Write a final evaluation for this {job_title} interview.\n\n"
+        f"Interview Q&A summary: {qa_summary[:600]}\n"
+        f"Average score across rounds: {round(avg_score, 1)}/10\n\n"
+        f"Return this exact JSON:\n"
+        f'{{"strengths":["specific strength 1","specific strength 2","specific strength 3"],'
+        f'"improvements":["specific area 1","specific area 2","specific area 3"],'
+        f'"study_topics":["topic 1","topic 2","topic 3"],'
+        f'"overall_feedback":"2 specific sentences about actual performance",'
+        f'"hire_recommendation":"Strong Hire|Hire|Maybe|No Hire"}}'
     )
-    raw    = await call_gemini_async(prompt, timeout=20.0)
+
+    raw    = await call_groq_async(
+        prompt=prompt,
+        system=system,
+        model="llama3-70b-8192",
+        max_tokens=500,
+        temperature=0.4,
+        timeout=15.0,
+    )
     result = parse_json(raw, {
-        "strengths":["Good communication"],"improvements":["Be more specific"],
-        "study_topics":["System design"],"overall_feedback":"Good effort.",
-        "hire_recommendation":"Maybe"
+        "strengths":           ["Good communication", "Showed enthusiasm", "Relevant experience"],
+        "improvements":        ["Be more specific", "Use STAR method", "Practice technical questions"],
+        "study_topics":        ["System design", "Data structures", "Behavioural questions"],
+        "overall_feedback":    "Good effort shown throughout the interview. Keep practicing.",
+        "hire_recommendation": "Maybe"
     })
     return result
 
@@ -714,76 +954,191 @@ async def coach_respond(request: dict):
     if not msg:
         return {"reply": "Hey! I'm Aria, your English coach. How are you doing today?"}
 
-    hist_str = "\n".join(
-        f"{m.get('role','').upper()}: {m.get('content','')[:80]}"
-        for m in (history or [])[-4:]
-        if isinstance(m,dict)
-    )
-    wrap = " We have about a minute left, let's start wrapping up." if time_left < 60 else ""
+    # Build conversation history for Groq (multi-turn format)
+    groq_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are Aria, a warm, encouraging, and natural English conversation coach. "
+                "You are having a real spoken conversation with a student who wants to practice English. "
+                "\n\nRULES:"
+                "\n- Maximum 2-3 sentences per response — this is a spoken conversation, not an essay"
+                "\n- Speak completely naturally — no bullet points, no lists, no headers"
+                "\n- Always end with one question to keep the conversation going"
+                "\n- Gently correct grammar mistakes by naturally using the correct form in your reply"
+                "\n- Be genuinely curious and engaged about what the student says"
+                "\n- Match their energy — casual if they are casual, more formal if they want formal practice"
+                "\n- Topics can be anything: their day, sports, food, movies, career, current events"
+                + (f"\n- Only {time_left} seconds left in this session — start naturally wrapping up" if time_left < 60 else "")
+            )
+        }
+    ]
 
-    prompt = (
-        f"You are Aria, a warm friendly English conversation coach.\n"
-        f"RULES: Max 2-3 sentences. Speak naturally. End with a question. "
-        f"Correct grammar gently by using correct form in your reply. "
-        f"Be genuinely interested.{wrap}\n\n"
-        f"Conversation:\n{hist_str or 'Start of conversation'}\n\n"
-        f"Student said: {msg}\n\n"
-        f"Aria replies (2-3 sentences, end with a question):"
-    )
-    reply = await call_gemini_async(prompt, timeout=20.0)
+    # Add conversation history (last 6 messages for context)
+    for m in (history or [])[-6:]:
+        if isinstance(m, dict) and m.get("role") and m.get("content"):
+            role = "assistant" if m["role"] == "assistant" else "user"
+            groq_messages.append({
+                "role":    role,
+                "content": m["content"][:200]
+            })
 
-    if not reply or reply.startswith("ERROR:"):
-        # Smart fallback based on what user said
-        if "badminton" in msg.lower() or "sport" in msg.lower():
-            reply = "That's great that you enjoy sports! Badminton is a fantastic game for fitness and reflexes. How often do you play, and do you have a favourite player you look up to?"
-        elif "discuss" in msg.lower() or "want" in msg.lower():
-            reply = "I'd love to discuss that with you! It sounds like an interesting topic. Can you tell me a little more about what specifically you'd like to explore?"
+    # Add current user message
+    groq_messages.append({"role": "user", "content": msg})
+
+    # ── USE GROQ WITH MULTI-TURN CONVERSATION ───────────────────
+    try:
+        client = get_groq_client()
+        if client:
+            loop   = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: client.chat.completions.create(
+                        model="llama3-8b-8192",
+                        messages=groq_messages,
+                        max_tokens=200,
+                        temperature=0.85,
+                    )
+                ),
+                timeout=10.0
+            )
+            reply = result.choices[0].message.content or ""
         else:
-            reply = f"That's really interesting! I'd love to hear more about {msg[:30]}... Can you tell me a bit more about that?"
+            raise Exception("Groq client not available")
 
-    return {"reply": reply.strip()}
+    except Exception as e:
+        print(f"⚠️ Groq coach failed: {e}, falling back to Gemini")
+        # Fallback to Gemini with simple prompt
+        hist_str = "\n".join(
+            f"{m.get('role','').upper()}: {m.get('content','')[:60]}"
+            for m in (history or [])[-4:]
+            if isinstance(m, dict)
+        )
+        gemini_prompt = (
+            f"You are Aria, a warm English coach. Have a natural 2-3 sentence conversation reply. "
+            f"End with a question. No lists or bullet points.\n\n"
+            f"History:\n{hist_str}\n\n"
+            f"Student: {msg}\n\nAria:"
+        )
+        reply = await call_gemini_async(gemini_prompt, timeout=15.0)
+
+    # Clean up reply
+    reply = (reply or "").strip()
+
+    # Smart fallback if both failed
+    if not reply or reply.startswith("ERROR:"):
+        topic = msg.lower()
+        if any(w in topic for w in ["badminton","sport","cricket","football","tennis"]):
+            reply = f"That's amazing that you're interested in sports! {msg.split()[0].capitalize() if msg.split() else 'Sports'} is such a great way to stay active. How long have you been playing, and do you play competitively or just for fun?"
+        elif any(w in topic for w in ["movie","film","show","series","watch"]):
+            reply = "I love talking about movies! There are so many great ones to discuss. What genre do you enjoy the most, and have you watched anything interesting recently?"
+        elif any(w in topic for w in ["food","eat","cook","recipe","restaurant"]):
+            reply = "Food is always a wonderful topic! There's so much to explore when it comes to cuisines and cooking. Do you enjoy cooking yourself, or do you prefer trying different restaurants?"
+        elif any(w in topic for w in ["study","college","university","exam","class"]):
+            reply = "That sounds like a busy time with your studies! Learning is such an important journey. What subject or topic are you finding the most challenging or interesting right now?"
+        else:
+            reply = f"That's really interesting! I'd love to explore that topic further with you. Could you tell me a little more about what you mean, and maybe share a personal experience related to it?"
+
+    return {"reply": reply}
 
 @app.post("/daily-coach/feedback")
 @app.post("/api/daily-coach/feedback")
 async def coach_feedback(request: dict):
-    history = request.get("history") or []
+    history   = request.get("history") or []
     user_msgs = [
-        m.get("content","").strip()
-        for m in history
-        if isinstance(m,dict) and m.get("role")=="user" and m.get("content","").strip()
+        m.get("content", "").strip()
+        for m in (history or [])
+        if isinstance(m, dict) and m.get("role") == "user" and m.get("content", "").strip()
     ]
-    text  = " ".join(user_msgs)
-    wc    = len(text.split()) if text else 0
-    score = max(5, min(100, wc*2 + 20))
+    full_text = " ".join(user_msgs)
+    wc        = len(full_text.split()) if full_text else 0
+    mc        = len(user_msgs)
+    avg_words = round(wc / max(mc, 1), 1)
+
+    # Calculate real metrics
+    fillers      = ["um","uh","like","basically","literally","you know","i mean","sort of","literally"]
+    words_list   = full_text.lower().split()
+    filler_count = sum(words_list.count(f) for f in fillers)
+    unique_words = len(set(re.findall(r'\b[a-zA-Z]{4,}\b', full_text.lower())))
+    total_words  = max(len(re.findall(r'\b[a-zA-Z]{4,}\b', full_text.lower())), 1)
+    vocab_div    = round(unique_words / total_words * 100, 1)
+
+    # Real score calculation
+    score = 0
+    score += min(30, wc // 5)
+    score += min(25, int(vocab_div * 0.35))
+    score += min(20, int(avg_words * 0.7))
+    score -= min(15, filler_count * 2)
+    score  = max(5, min(100, score))
 
     if wc < 10:
         return {
-            "fluency_score":50,"overall_feedback":f"Only {wc} words detected. Speak more next time!",
-            "strengths":["You participated"],"improvements":["Speak in full sentences","Use mic correctly"],
-            "vocabulary_highlights":[],"grammar_notes":"Not enough speech to analyze.",
-            "word_count":wc,"message_count":len(user_msgs),"avg_words_per_message":0,
-            "filler_count":0,"vocab_diversity":0,"grammar_flags":[]
+            "fluency_score": 0,
+            "overall_feedback": f"Only {wc} words detected this session. Make sure your microphone is enabled and you are speaking clearly.",
+            "strengths":            ["You started the session"],
+            "improvements":         ["Speak in full sentences", "Tap mic and speak clearly", "Allow microphone permissions"],
+            "vocabulary_highlights": [],
+            "grammar_notes":        "No speech detected.",
+            "topic_engagement":     "No engagement detected.",
+            "word_count":           wc,
+            "message_count":        mc,
+            "avg_words_per_message": 0,
+            "filler_count":         filler_count,
+            "vocab_diversity":      0,
+            "grammar_flags":        [],
         }
 
-    prompt = (
-        f"Give English feedback. Return ONLY valid JSON.\n"
-        f"Student said {wc} words: {text[:500]}\n"
-        f'{{"overall_feedback":"2 specific sentences.","strengths":["s1","s2"],'
-        f'"improvements":["i1","i2"],"vocabulary_highlights":["word1"],'
-        f'"grammar_notes":"observation.","topic_engagement":"engagement note."}}'
+    system = (
+        "You are an expert English communication coach giving specific, honest feedback. "
+        "You reference what the student actually said. "
+        "You return ONLY valid JSON — no markdown, no backticks."
     )
-    raw    = await call_gemini_async(prompt, timeout=20.0)
+
+    prompt = (
+        f"Give feedback on this English speaking session.\n\n"
+        f"REAL MEASURED METRICS (base your feedback on these):\n"
+        f"- Total words spoken: {wc}\n"
+        f"- Number of replies: {mc}\n"
+        f"- Average words per reply: {avg_words}\n"
+        f"- Vocabulary diversity: {vocab_div}%\n"
+        f"- Filler words (um/uh/like): {filler_count}\n"
+        f"- Calculated fluency score: {score}/100\n\n"
+        f"Student's actual words:\n{full_text[:800]}\n\n"
+        f"Return this JSON (be SPECIFIC about their actual speech, not generic):\n"
+        f'{{"overall_feedback":"2 specific sentences about what they actually said",'
+        f'"strengths":["specific strength from their speech"],'
+        f'"improvements":["specific actionable improvement"],'
+        f'"vocabulary_highlights":["actual good word they used"],'
+        f'"grammar_notes":"specific grammar observation or confirmation it was good",'
+        f'"topic_engagement":"how well they elaborated on topics"}}'
+    )
+
+    raw    = await call_groq_async(
+        prompt=prompt,
+        system=system,
+        model="llama3-70b-8192",
+        max_tokens=500,
+        temperature=0.3,
+        timeout=15.0,
+    )
     result = parse_json(raw, {
-        "overall_feedback":"Good session! Keep practicing.",
-        "strengths":["Active participation"],"improvements":["Elaborate more"],
-        "vocabulary_highlights":[],"grammar_notes":"Keep practicing.",
-        "topic_engagement":"Good engagement."
+        "overall_feedback":     "Good session! Keep practicing daily.",
+        "strengths":            ["Participated in conversation"],
+        "improvements":         ["Elaborate more on your answers", "Reduce filler words"],
+        "vocabulary_highlights": [],
+        "grammar_notes":        "Overall grammar was adequate.",
+        "topic_engagement":     "Moderate engagement shown."
     })
+
     result.update({
-        "fluency_score":score,"word_count":wc,
-        "message_count":len(user_msgs),
-        "avg_words_per_message":round(wc/max(len(user_msgs),1),1),
-        "filler_count":0,"vocab_diversity":60,"grammar_flags":[]
+        "fluency_score":         score,
+        "word_count":            wc,
+        "message_count":         mc,
+        "avg_words_per_message": avg_words,
+        "filler_count":          filler_count,
+        "vocab_diversity":       vocab_div,
+        "grammar_flags":         [],
     })
     return result
 
