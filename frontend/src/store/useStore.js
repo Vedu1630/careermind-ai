@@ -61,6 +61,7 @@ const useStore = create(
           changesSummary: [],
           keywordsAdded: [],
           atsScores: null,
+          rewrittenPdfPath: null,
           isLoading: false,
         },
         setRewriteResult: (data) =>
@@ -71,6 +72,7 @@ const useStore = create(
               changesSummary: data.changes_summary || [],
               keywordsAdded: data.keywords_added || [],
               atsScores: data.ats_scores || null,
+              rewrittenPdfPath: data.rewritten_pdf_path || null,
               isLoading: false,
             },
           })),
@@ -84,6 +86,7 @@ const useStore = create(
               changesSummary: [],
               keywordsAdded: [],
               atsScores: null,
+              rewrittenPdfPath: null,
               isLoading: false,
             },
           })),

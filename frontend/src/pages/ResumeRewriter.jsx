@@ -79,35 +79,31 @@ export default function ResumeRewriter() {
 
   const handleDownloadPDF = async () => {
     setIsDownloading(true);
-    
     try {
-      // Send request to the proxy API endpoint to avoid CORS and host resolution issues
       const response = await axios.post(
-        '/api/rewrite/download-pdf',
+        `${BACKEND_URL}/api/rewrite/download-pdf`,
         {
-          resume_path: resume.path,
-          original_text: rewrite.original,
-          rewritten_text: rewrite.rewritten
+          rewritten_pdf_path: rewriteData.rewrittenPdfPath || "",
+          rewritten_text:     rewriteData.rewritten        || "",
+          original_text:      rewriteData.original         || "",
+          resume_path:        resume?.path                 || "",
         },
-        { responseType: 'blob' }   // MUST be blob for binary PDF
+        { responseType: "blob", timeout: 60000 }
       );
-      
-      // Create download link
-      const blob = new Blob([response.data], { type: 'application/pdf' });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'rewritten_resume.pdf';
+
+      const blob = new Blob([response.data], { type: "application/pdf" });
+      const url  = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href     = url;
+      link.download = "rewritten_resume.pdf";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-      
-      // Reveal the score verifier box
+
       setShowVerifier(true);
-      
-    } catch (error) {
-      console.error('PDF download failed:', error);
+    } catch (err) {
+      console.error("PDF download failed:", err);
       setError('Failed to download the rewritten PDF. Please ensure the backend is running.');
     } finally {
       setIsDownloading(false);

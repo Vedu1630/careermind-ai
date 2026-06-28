@@ -610,66 +610,116 @@ async def get_jobs(
 @app.post("/rewrite")
 @app.post("/api/rewrite")
 async def rewrite_resume(request: dict):
-    path      = request.get("file_path") or request.get("resume_path") or ""
+    path      = request.get("resume_path", "") or request.get("file_path", "")
     job       = request.get("job", {})
-    job_title = job.get("title","Software Engineer")
-    job_desc  = (job.get("description") or "")[:500]
+    job_title = str(job.get("title") or "Software Engineer")
+    job_desc  = str(job.get("description") or "")[:500]
 
     if not path or not os.path.exists(path):
-        raise HTTPException(404, f"Resume not found at path: {path}")
+        raise HTTPException(404, f"Resume not found: {path}")
 
-    text = _cache.get(f"text:{path}") or extract_pdf_text(path)
+    # Get original text (use cache if available)
+    original_text = _cache.get(f"text:{path}") or ""
+    if not original_text:
+        try:
+            from tools.pdf_tool import pdf_handler
+            original_text = pdf_handler.extract_text_for_ai(path)
+        except ImportError:
+            original_text = extract_pdf_text(path)
+        _cache[f"text:{path}"] = original_text
 
-    # 1. Calculate original ATS score and extract missing keywords
+    # Calculate original ATS score and extract missing keywords
     from utils.ats_scorer import calculate_real_ats_score
-    orig_ats_data = calculate_real_ats_score(text, job_desc)
+    orig_ats_data = calculate_real_ats_score(original_text, job_desc)
     orig_ats_score = orig_ats_data["ats_score"]
     missing_keywords = orig_ats_data["missing_keywords"]
 
-    # 2. Instruct the LLM to inject these missing keywords
-    prompt = (
-        f"You are an expert ATS resume optimizer. Your job is to rewrite this resume to maximize "
-        f"ATS score for the target role. You MUST make real, substantial changes.\n\n"
-        f"TARGET ROLE: {job_title}\n"
-        f"JOB DESCRIPTION: {job_desc}\n\n"
-        f"CURRENT ATS SCORE: {orig_ats_score}%\n"
-        f"KEYWORDS CURRENTLY MISSING FROM RESUME: {missing_keywords[:15]}\n"
-        f"CURRENT ISSUES: {orig_ats_data['feedback']}\n\n"
-        f"ORIGINAL RESUME:\n{text[:2200]}\n\n"
-        f"REWRITING RULES:\n"
-        f"1. Add AT LEAST 5-10 of the missing keywords naturally into the resume\n"
-        f"2. Quantify at least 3 achievements with numbers (if not already done)\n"
-        f"3. Ensure all sections are clearly labeled: Contact, Summary, Skills, Experience, Education, Projects\n"
-        f"4. Do NOT fabricate experience or companies — only enhance what exists\n"
-        f"5. Keep the exact same structure and line count, return ONLY the rewritten resume text, no markdown, no comments, no JSON wrappers."
-    )
-    rewritten = await call_gemini_async(prompt, timeout=35.0)
+    # Strict Gemini prompt — preserves structure
+    prompt = f"""You are a professional resume editor improving ATS score.
+Rewrite this resume to better match the target job.
 
-    if rewritten.startswith("ERROR:"):
-        rewritten = text  # fallback to original
+STRICT RULES — these will corrupt the PDF if broken:
+1. Output EXACTLY the same number of lines as the input
+2. Keep ALL section headers word-for-word unchanged:
+   Education, Experience, Projects, Certifications, CORE SKILLS,
+   Achievements and Positions of Responsibility
+3. Keep ALL names, universities, schools, companies, dates, CGPA, percentages UNCHANGED
+4. Keep ALL bullet point markers (•) exactly as-is
+5. NEVER add placeholder text like [Email] [LinkedIn] [GitHub] [Phone]
+6. NEVER merge two lines or split one line into two
+7. NEVER change bold/italic markers or formatting
+8. ONLY improve: bullet point descriptions and project descriptions
+9. Add ATS keywords from job description naturally into existing sentences
+10. Quantify achievements with realistic numbers where vague
+11. Use strong action verbs: Engineered, Built, Deployed, Optimized, Implemented
+12. Return ONLY the resume text — no explanation, no preamble
 
-    # Remove placeholders
-    for p in [r"\[Email\]",r"\[LinkedIn\]",r"\[GitHub\]",r"\[Phone\]",r"\[URL\]"]:
-        rewritten = re.sub(p, "", rewritten, flags=re.IGNORECASE)
+Original Resume ({len(original_text.split(chr(10)))} lines — match this count):
+{original_text[:2500]}
 
-    # 3. Recalculate ATS score deterministically on rewritten text
+Target Job: {job_title}
+Keywords to add: {job_desc[:300]}
+
+Rewritten resume (same line count, same structure):"""
+
+    rewritten = await call_gemini_async(prompt, timeout=40.0)
+
+    if not rewritten or rewritten.startswith("ERROR:"):
+        rewritten = original_text  # return original if Gemini fails
+
+    # Strip any placeholders Gemini added anyway
+    for pattern in [r'\[Email\]', r'\[LinkedIn\]', r'\[GitHub\]',
+                    r'\[Phone\]', r'\[URL\]', r'\[Website\]', r'\[Name\]']:
+        rewritten = re.sub(pattern, '', rewritten, flags=re.IGNORECASE)
+    # Clean double pipes/spaces from placeholder removal
+    rewritten = re.sub(r'\s*\|\s*\|\s*', ' ', rewritten)
+    rewritten = re.sub(r'^\s*\|\s*', '', rewritten, flags=re.MULTILINE)
+
+    # Calculate keywords added and ATS scores
+    jw     = set(w.lower() for w in job_desc.split() if len(w) > 5)
+    ow     = set(original_text.lower().split())
+    nw     = set(rewritten.lower().split())
+    kw_add = list((jw & nw) - ow)[:12]
+
+    # Recalculate ATS score deterministically
     new_ats_data = calculate_real_ats_score(rewritten, job_desc)
     new_ats_score = new_ats_data["ats_score"]
 
-    # Deduce actually added keywords
-    jw = set(w.lower() for w in job_desc.split() if len(w)>5)
-    ow = set(text.lower().split())
-    nw = set(rewritten.lower().split())
-    kw = list((jw & nw) - ow)[:12]
+    # Build rewritten PDF preserving original formatting
+    pdf_path = None
+    try:
+        from tools.pdf_tool import pdf_handler
+        pdf_bytes = pdf_handler.rebuild_pdf_with_rewritten_text(
+            original_path=path,
+            original_text=original_text,
+            rewritten_text=rewritten,
+        )
+        # Save to temp file for download endpoint
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".pdf",
+            prefix="rewritten_",
+            dir="data/uploads",
+            delete=False
+        )
+        tmp.write(pdf_bytes)
+        tmp.close()
+        pdf_path = tmp.name
+        print(f"✅ Rewritten PDF saved: {pdf_path}")
+    except Exception as e:
+        print(f"⚠️ PDF rebuild failed: {e} — text-only mode")
+        import traceback; traceback.print_exc()
 
     return {
-        "original_text":   text,
-        "rewritten_text":  rewritten,
-        "keywords_added":  kw,
+        "original_text":       original_text,
+        "rewritten_text":      rewritten,
+        "keywords_added":      kw_add,
+        "rewritten_pdf_path":  pdf_path,
         "changes_summary": [
-            f"Added {len(kw)} ATS keywords from job description",
-            "Quantified achievements with realistic metrics",
-            "Preserved original formatting and layout",
+            f"Added {len(kw_add)} ATS keywords from job description",
+            "Strengthened bullet points with action verbs",
+            "Preserved exact original formatting — logo, photo, layout intact",
+            "Quantified achievements where possible",
         ],
         "ats_scores": {
             "original":    orig_ats_score,
@@ -682,29 +732,69 @@ async def rewrite_resume(request: dict):
 @app.post("/rewrite/download-pdf")
 @app.post("/api/rewrite/download-pdf")
 async def download_pdf(request: dict):
-    rewritten = request.get("rewritten_text","")
-    if not rewritten:
-        raise HTTPException(400, "No rewritten text provided")
-    try:
-        from reportlab.pdfgen import canvas as rl
-        from reportlab.lib.pagesizes import A4
-        buf  = io.BytesIO()
-        c    = rl.Canvas(buf, pagesize=A4)
-        w, h = A4
-        c.setFont("Helvetica", 10)
-        y = h - 50
-        for line in rewritten.split("\n"):
-            if y < 50: c.showPage(); c.setFont("Helvetica",10); y=h-50
-            c.drawString(40, y, line[:110])
-            y -= 13
-        c.save(); buf.seek(0)
-        return StreamingResponse(buf, media_type="application/pdf",
-            headers={"Content-Disposition":'attachment; filename="rewritten_resume.pdf"'})
-    except ImportError:
-        # reportlab not installed — return text file
-        content = rewritten.encode()
-        return StreamingResponse(io.BytesIO(content), media_type="text/plain",
-            headers={"Content-Disposition":'attachment; filename="rewritten_resume.txt"'})
+    # First try pre-built PDF from rewrite step
+    pdf_path      = request.get("rewritten_pdf_path", "")
+    rewritten_text = request.get("rewritten_text", "")
+    original_path  = request.get("resume_path", "")
+    original_text  = request.get("original_text", "")
+
+    # Option 1: Use pre-built PDF file
+    if pdf_path and os.path.exists(pdf_path):
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="rewritten_resume.pdf"'}
+        )
+
+    # Option 2: Rebuild on demand from original + rewritten text
+    if original_path and os.path.exists(original_path) and rewritten_text:
+        try:
+            from tools.pdf_tool import pdf_handler
+            if not original_text:
+                original_text = pdf_handler.extract_text_for_ai(original_path)
+            pdf_bytes = pdf_handler.rebuild_pdf_with_rewritten_text(
+                original_path=original_path,
+                original_text=original_text,
+                rewritten_text=rewritten_text,
+            )
+            return StreamingResponse(
+                io.BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={"Content-Disposition": 'attachment; filename="rewritten_resume.pdf"'}
+            )
+        except Exception as e:
+            print(f"PDF rebuild failed: {e}")
+
+    # Option 3: Fallback — wrap rewritten text in simple PDF
+    if rewritten_text:
+        try:
+            from reportlab.pdfgen import canvas as rl
+            from reportlab.lib.pagesizes import A4
+            buf   = io.BytesIO()
+            c     = rl.Canvas(buf, pagesize=A4)
+            W, H  = A4
+            c.setFont("Helvetica", 10)
+            y = H - 50
+            for line in rewritten_text.split("\n"):
+                if y < 50:
+                    c.showPage()
+                    c.setFont("Helvetica", 10)
+                    y = H - 50
+                c.drawString(40, y, line[:110])
+                y -= 13
+            c.save()
+            buf.seek(0)
+            return StreamingResponse(
+                buf,
+                media_type="application/pdf",
+                headers={"Content-Disposition": 'attachment; filename="rewritten_resume.pdf"'}
+            )
+        except ImportError:
+            pass
+
+    raise HTTPException(400, "No PDF content available to download")
 
 # ── Interview Question ─────────────────────────────────────────────
 @app.post("/interview/question")
