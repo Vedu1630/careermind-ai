@@ -75,34 +75,28 @@ def get_llm():
     global _llm
     if _llm is not None:
         return _llm
-    if not LLM_OK:
-        return None
     key = os.getenv("GOOGLE_API_KEY", "").strip()
     if not key:
         print("❌ GOOGLE_API_KEY empty at get_llm() call")
         return None
     try:
-        _llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=key,
-            temperature=0.2,
-            max_tokens=1200,
-            convert_system_message_to_human=True,
-        )
-        print("✅ Gemini LLM initialized")
+        import google.generativeai as genai
+        genai.configure(api_key=key)
+        _llm = genai.GenerativeModel("gemini-2.5-flash")
+        print("✅ Gemini LLM (official SDK) initialized")
         return _llm
     except Exception as e:
         print(f"❌ LLM init failed: {e}")
         return None
 
 def call_gemini(prompt: str) -> str:
-    """Call Gemini. Returns response text or ERROR: message."""
+    """Call Gemini using the official SDK. Returns response text or ERROR: message."""
     try:
-        llm = get_llm()
-        if llm is None:
+        model = get_llm()
+        if model is None:
             return "ERROR: Gemini not available. Check GOOGLE_API_KEY in Render environment."
-        result = llm.invoke(prompt)
-        return result.content or ""
+        response = model.generate_content(prompt)
+        return response.text or ""
     except Exception as e:
         err = str(e)
         print(f"❌ Gemini call failed: {err}")
@@ -110,7 +104,7 @@ def call_gemini(prompt: str) -> str:
             return "ERROR: Invalid GOOGLE_API_KEY. Verify it in Render → Environment."
         if "quota" in err.lower() or "429" in err:
             return "ERROR: Gemini quota exceeded. Wait and retry."
-        return f"ERROR: {err[:100]}"
+        return f"ERROR: {err[:150]}"
 
 async def call_gemini_async(prompt: str, timeout: float = 30.0) -> str:
     """Async Gemini call with timeout."""
