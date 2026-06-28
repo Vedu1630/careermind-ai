@@ -65,6 +65,10 @@ export function BackendStatus() {
           }
 
           if (geminiStatus === "error" && geminiTest.includes("❌")) {
+            if (data?.groq_configured) {
+              setStatus("groq-fallback");
+              return;
+            }
             // Real Gemini error — key might be invalid
             setStatus("gemini-error");
             setDetail(geminiTest);
@@ -100,6 +104,7 @@ export function BackendStatus() {
     down: `⚠️ Backend not reachable at ${BACKEND_URL} — check Render dashboard`,
     "no-key": "🔑 GOOGLE_API_KEY not set in Render → Environment → Add GOOGLE_API_KEY",
     "gemini-error": `⚠️ Gemini API issue: ${detail} — check your API key at aistudio.google.com`,
+    "groq-fallback": "⚠️ Gemini is not working, we are using Groq as a backup!",
     waking: "⏳ Backend waking up from sleep — please wait 30 seconds then refresh",
   };
 
@@ -107,6 +112,7 @@ export function BackendStatus() {
     down:          "bg-red-50 border-red-100 text-red-700",
     "no-key":      "bg-amber-50 border-amber-100 text-amber-700",
     "gemini-error":"bg-amber-50 border-amber-100 text-amber-700",
+    "groq-fallback":"bg-amber-50 border-amber-100 text-amber-700",
     waking:        "bg-blue-50 border-blue-100 text-blue-700",
   };
 

@@ -305,6 +305,7 @@ async def health():
         "gemini_test":    gemini_test,
         "llm_available":  LLM_OK and key_set,
         "pdf_available":  PDF_OK,
+        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
     }
 
 @app.get("/api/diagnose")
