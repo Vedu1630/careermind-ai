@@ -390,6 +390,7 @@ async def analyze_resume(request: dict):
     return result
 
 # ── Jobs ───────────────────────────────────────────────────────────
+@app.get("/jobs")
 @app.get("/api/jobs")
 async def get_jobs(
     q:        str = "Software Engineer",
@@ -674,6 +675,7 @@ async def interview_report(request: dict):
     return result
 
 # ── Daily Coach ────────────────────────────────────────────────────
+@app.post("/daily-coach/respond")
 @app.post("/api/daily-coach/respond")
 async def coach_respond(request: dict):
     msg       = (request.get("user_message") or "").strip()
@@ -712,6 +714,7 @@ async def coach_respond(request: dict):
 
     return {"reply": reply.strip()}
 
+@app.post("/daily-coach/feedback")
 @app.post("/api/daily-coach/feedback")
 async def coach_feedback(request: dict):
     history = request.get("history") or []
