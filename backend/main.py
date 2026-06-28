@@ -511,6 +511,7 @@ async def download_pdf(request: dict):
             headers={"Content-Disposition":'attachment; filename="rewritten_resume.txt"'})
 
 # ── Interview Question ─────────────────────────────────────────────
+@app.post("/interview/question")
 @app.post("/api/interview/question")
 async def interview_question(request: dict):
     job_title  = str(request.get("job_title") or "Software Engineer")
@@ -557,6 +558,7 @@ async def interview_question(request: dict):
     return {"question": question.strip(), "round": round_num}
 
 # ── Interview Score ────────────────────────────────────────────────
+@app.post("/interview/score-text")
 @app.post("/api/interview/score-text")
 async def score_answer(request: dict):
     transcript = (request.get("transcript") or "").strip()
@@ -590,11 +592,13 @@ async def score_answer(request: dict):
     scored["filler_count"] = fc
     return {"transcript": transcript, "score": scored}
 
+@app.post("/interview/score")
 @app.post("/api/interview/score")
 async def score_answer_alias(request: dict):
     return await score_answer(request)
 
 # ── Interview Follow-up ────────────────────────────────────────────
+@app.post("/interview/followup")
 @app.post("/api/interview/followup")
 async def followup(request: dict):
     q    = request.get("original_question","")
@@ -611,6 +615,7 @@ async def followup(request: dict):
     return {"followup_question": result.strip()}
 
 # ── Interview Report ───────────────────────────────────────────────
+@app.post("/interview/report")
 @app.post("/api/interview/report")
 async def interview_report(request: dict):
     history   = request.get("history", [])
