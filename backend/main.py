@@ -388,6 +388,11 @@ async def analyze_resume(request: dict):
     if not text or len(text) < 20:
         raise HTTPException(422, "Cannot extract text. Ensure PDF is not a scanned image.")
 
+    # Calculate deterministic base score as ground truth for Gemini
+    from utils.ats_scorer import calculate_real_ats_score
+    ats_data = calculate_real_ats_score(text, job_desc)
+    real_ats_score = ats_data["ats_score"]
+
     # Truncate to fit context window (keep first 3000 chars = full resume)
     text_truncated = text[:3000]
 
@@ -408,6 +413,18 @@ CRITICAL RULES:
   resume text provided
 - If two resumes are different, their scores MUST be different
 
+OUR DETERMINISTIC PARSER EXTRACTED THE FOLLOWING GROUND TRUTH DATA:
+- Keyword Score: {ats_data['score_breakdown']['keywords']}/40 (Keywords found: {ats_data['found_keywords']}, Missing: {ats_data['missing_keywords'][:15]})
+- Required Sections Score: {ats_data['score_breakdown']['sections']}/25 (Missing: {ats_data['missing_sections']})
+- Quantification/Metrics Score: {ats_data['score_breakdown']['quantification']}/20 (Quantified statements found: {ats_data['quantified_achievements_count']})
+- Formatting Score: {ats_data['score_breakdown']['format']}/15 (Formatting issues: {ats_data['feedback']})
+
+CRITICAL GRADING RULES:
+1. You MUST base your category score calculations on the above factual parser data.
+2. If the quantification statements count is 0, you MUST score "experience_quality" as 0 (out of 20).
+3. If there are formatting issues, missing email, or missing phone, you MUST penalize the "formatting" score heavily.
+4. Calculate the final `ats_score` strictly using the sum of the categories (out of 100). The final score should be extremely close to the base score of {real_ats_score} unless you find additional visual/reading flow issues. Do NOT artificially inflate the score. Be a harsh grader like a top tier company recruiter.
+
 HOW TO CALCULATE THE SCORE (out of 100):
 
 1. KEYWORD DENSITY (30 points)
@@ -425,7 +442,7 @@ HOW TO CALCULATE THE SCORE (out of 100):
    - Are achievements quantified? (e.g., "increased sales by 30%")
    - Are strong action verbs used?
    - Is experience relevant and clearly described?
-   - Vague bullet points = lower score
+   - Vague bullet points = lower score (0 if no numbers/metrics found)
 
 4. COMPLETENESS OF SECTIONS (15 points)
    - Has: Contact Info, Summary, Experience, Education, Skills?
