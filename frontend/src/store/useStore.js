@@ -76,6 +76,13 @@ const useStore = create(
               isLoading: false,
             },
           })),
+        setRewrite: (data) => set(s => ({
+          rewrite: { ...s.rewrite, ...data }
+        })),
+        setResume: (data) => set(s => ({
+          resume: { ...s.resume, ...data },
+          rewrite: { original: null, rewritten: null, changesSummary: [], keywordsAdded: [], atsScores: null, pdfPath: null, rewrittenPdfPath: null, isLoading: false },
+        })),
         setRewriteLoading: (isLoading) =>
           set((s) => ({ rewrite: { ...s.rewrite, isLoading } })),
         clearRewrite: () =>

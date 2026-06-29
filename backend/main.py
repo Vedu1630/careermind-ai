@@ -28,16 +28,8 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 
 # ── Safe package imports ───────────────────────────────────────────
-LLM_OK    = False
 PDF_OK    = False
 CHROMA_OK = False
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    LLM_OK = True
-    print("✅ langchain_google_genai imported")
-except Exception as e:
-    print(f"❌ langchain_google_genai failed: {e}")
 
 try:
     import PyPDF2
@@ -68,82 +60,30 @@ if not kb.exists():
         "HTML CSS Tailwind Firebase Supabase Android iOS React Native Java C++"
     )
 
-# ── LLM singleton ─────────────────────────────────────────────────
-_llm = None
-
-def get_llm():
-    global _llm
-    if _llm is not None:
-        return _llm
-    key = os.getenv("GOOGLE_API_KEY", "").strip()
-    if not key:
-        print("❌ GOOGLE_API_KEY empty at get_llm() call")
-        return None
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=key)
-        _llm = genai.GenerativeModel("gemini-2.5-flash")
-        print("✅ Gemini LLM (official SDK) initialized")
-        return _llm
-    except Exception as e:
-        print(f"❌ LLM init failed: {e}")
-        return None
-
-def call_gemini(prompt: str) -> str:
-    """Call Gemini using the official SDK."""
-    try:
-        model = get_llm()
-        if model is None:
-            return "ERROR: Gemini not available. Check GOOGLE_API_KEY in Render environment."
-        response = model.generate_content(prompt)
-        return response.text or ""
-    except Exception as e:
-        err = str(e)
-        print(f"❌ Gemini call failed: {err}")
-        if "API_KEY" in err or "api key" in err.lower() or "credentials" in err.lower():
-            return "ERROR: Invalid GOOGLE_API_KEY. Verify it in Render → Environment."
-        if any(k in err.lower() for k in ["quota", "429", "rate limit", "resource exhausted"]):
-            return "ERROR: Gemini quota exceeded. Wait and retry."
-        return f"ERROR: {err[:150]}"
-
-
-async def call_gemini_async(prompt: str, timeout: float = 30.0) -> str:
-    """Async Gemini call with timeout."""
-    loop = asyncio.get_event_loop()
-    try:
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: call_gemini(prompt)),
-            timeout=timeout
-        )
-        return result
-    except asyncio.TimeoutError:
-        return "ERROR: Request timed out. Gemini was too slow."
-    except Exception as e:
-        return f"ERROR: {str(e)}"
-
-# ── Groq LLM (for interview + daily coach) ────────────────────────
-GROQ_OK = False
+# ── ADD GROQ AS THE ONLY LLM ──────────────────────────────────────
+GROQ_OK     = False
 _groq_client = None
 
 try:
-    from groq import Groq
+    from groq import Groq as GroqClient
     GROQ_OK = True
-    print("✅ groq package imported")
+    print("✅ Groq package imported")
 except Exception as e:
-    print(f"⚠️ groq not available: {e}")
+    print(f"❌ Groq import failed: {e} — run: pip install groq")
 
-def get_groq_client():
+def get_groq():
     global _groq_client
     if _groq_client is not None:
         return _groq_client
     if not GROQ_OK:
+        print("❌ Groq package not installed")
         return None
     key = os.getenv("GROQ_API_KEY", "").strip()
     if not key:
-        print("❌ GROQ_API_KEY not set")
+        print("❌ GROQ_API_KEY not set in environment")
         return None
     try:
-        _groq_client = Groq(api_key=key)
+        _groq_client = GroqClient(api_key=key)
         print("✅ Groq client initialized")
         return _groq_client
     except Exception as e:
@@ -151,27 +91,21 @@ def get_groq_client():
         return None
 
 def call_groq(
-    prompt: str,
-    system: str = "You are a helpful AI assistant.",
-    model:  str = "llama3-8b-8192",
-    max_tokens: int = 600,
-    temperature: float = 0.7,
+    prompt:      str,
+    system:      str   = "You are a helpful AI assistant. Be concise and accurate.",
+    model:       str   = "llama3-70b-8192",
+    max_tokens:  int   = 1000,
+    temperature: float = 0.3,
 ) -> str:
     """
-    Call Groq API. Returns response text or ERROR: message.
-    Models available free:
-    - llama3-8b-8192       → fastest, great for conversation
-    - llama3-70b-8192      → smarter, slightly slower
-    - mixtral-8x7b-32768   → longest context
-    - gemma2-9b-it         → Google's model on Groq
+    Call Groq API synchronously.
+    Returns response text or ERROR: message.
+    Never throws — always returns a string.
     """
+    client = get_groq()
+    if client is None:
+        return "ERROR: Groq not available. Set GROQ_API_KEY in Render environment variables."
     try:
-        client = get_groq_client()
-        if client is None:
-            # Fallback to Gemini if Groq not available
-            print("⚠️ Groq not available, falling back to Gemini")
-            return call_gemini(f"{system}\n\n{prompt}")
-
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -181,30 +115,42 @@ def call_groq(
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        return response.choices[0].message.content or ""
-
+        result = response.choices[0].message.content or ""
+        return result.strip()
     except Exception as e:
         err = str(e)
-        print(f"❌ Groq call failed: {err}")
-        if "api_key" in err.lower() or "authentication" in err.lower():
-            return "ERROR: Invalid GROQ_API_KEY. Check console.groq.com"
+        print(f"❌ Groq call failed ({model}): {err[:100]}")
         if "rate_limit" in err.lower() or "429" in err:
-            # Rate limited — fall back to Gemini
-            print("⚠️ Groq rate limited, falling back to Gemini")
-            return call_gemini(f"{system}\n\n{prompt}")
-        # Any other error — fall back to Gemini
-        print(f"⚠️ Groq error, falling back to Gemini: {err}")
-        return call_gemini(f"{system}\n\n{prompt}")
+            # Rate limited — try smaller model
+            if model != "llama3-8b-8192":
+                print("⚠️ Rate limited on 70b, retrying with 8b")
+                try:
+                    response = client.chat.completions.create(
+                        model="llama3-8b-8192",
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user",   "content": prompt},
+                        ],
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
+                    return (response.choices[0].message.content or "").strip()
+                except Exception as e2:
+                    return f"ERROR: Rate limited. Wait 1 minute and try again."
+            return "ERROR: Rate limited. Wait 1 minute and try again."
+        if "api_key" in err.lower() or "auth" in err.lower():
+            return "ERROR: Invalid GROQ_API_KEY. Check Render environment variables."
+        return f"ERROR: {err[:100]}"
 
 async def call_groq_async(
-    prompt: str,
-    system: str = "You are a helpful AI assistant.",
-    model:  str = "llama3-8b-8192",
-    max_tokens: int = 600,
-    temperature: float = 0.7,
-    timeout: float = 15.0,
+    prompt:      str,
+    system:      str   = "You are a helpful AI assistant.",
+    model:       str   = "llama3-70b-8192",
+    max_tokens:  int   = 1000,
+    temperature: float = 0.3,
+    timeout:     float = 25.0,
 ) -> str:
-    """Async wrapper for Groq with timeout and Gemini fallback."""
+    """Async wrapper for Groq. Never throws."""
     loop = asyncio.get_event_loop()
     try:
         result = await asyncio.wait_for(
@@ -216,10 +162,14 @@ async def call_groq_async(
         )
         return result
     except asyncio.TimeoutError:
-        print("⚠️ Groq timed out, falling back to Gemini")
-        return await call_gemini_async(f"{system}\n\n{prompt}", timeout=20.0)
+        print(f"⚠️ Groq timed out after {timeout}s")
+        return "ERROR: Request timed out. Please try again."
     except Exception as e:
-        return f"ERROR: {str(e)}"
+        return f"ERROR: {str(e)[:100]}"
+
+# Backwards compatibility aliases
+call_gemini       = lambda p: call_groq(p)
+call_gemini_async = lambda p, timeout=25.0: call_groq_async(p, timeout=timeout)
 
 def parse_json(text: str, fallback: dict) -> dict:
     """Safely parse JSON from LLM response."""
@@ -337,92 +287,52 @@ async def health_check():
 
 @app.get("/health")
 async def health():
-    gemini_key = bool(os.getenv("GOOGLE_API_KEY","").strip())
-    groq_key   = bool(os.getenv("GROQ_API_KEY","").strip())
+    groq_key = bool(os.getenv("GROQ_API_KEY", "").strip())
+    groq_test = "❌ GROQ_API_KEY not set in Render Environment"
+    groq_status = "missing"
 
-    # Test Groq (fast — should respond in <2 seconds)
-    groq_test = "❌ GROQ_API_KEY not set"
     if groq_key and GROQ_OK:
         try:
             loop   = asyncio.get_event_loop()
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: call_groq("Say WORKING", max_tokens=10)),
-                timeout=5.0
-            )
-            groq_test = f"✅ working — {result[:20]}" if not result.startswith("ERROR:") else f"❌ {result[:60]}"
-        except asyncio.TimeoutError:
-            groq_test = "⚠️ timed out (cold start)"
-        except Exception as e:
-            groq_test = f"❌ {str(e)[:60]}"
-
-    # Test Gemini (may be slower)
-    gemini_test = "❌ GOOGLE_API_KEY not set"
-    gemini_status = "missing"
-    if gemini_key and LLM_OK:
-        try:
-            loop   = asyncio.get_event_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, lambda: call_gemini("Say WORKING")),
+                loop.run_in_executor(
+                    None,
+                    lambda: call_groq("Say WORKING", max_tokens=5, model="llama3-8b-8192")
+                ),
                 timeout=8.0
             )
             if result and not result.startswith("ERROR:"):
-                gemini_test   = f"✅ working — {result[:20]}"
-                gemini_status = "ok"
+                groq_test   = f"✅ working — {result[:20]}"
+                groq_status = "ok"
             else:
-                gemini_test   = f"❌ {result[:60]}"
-                gemini_status = "error"
+                groq_test   = f"❌ {result[:80]}"
+                groq_status = "error"
         except asyncio.TimeoutError:
-            gemini_test   = "⚠️ key set but timed out (cold start)"
-            gemini_status = "timeout"
+            groq_test   = "⚠️ key set but timed out (cold start)"
+            groq_status = "timeout"
         except Exception as e:
-            gemini_test   = f"❌ {str(e)[:60]}"
-            gemini_status = "error"
+            groq_test   = f"❌ {str(e)[:80]}"
+            groq_status = "error"
 
     return {
-        "status":         "online",
-        "google_api_key": "SET" if gemini_key else "MISSING",
-        "groq_api_key":   "SET" if groq_key   else "MISSING",
-        "gemini_test":    gemini_test,
-        "gemini_status":  gemini_status,
-        "groq_test":      groq_test,
-        "llm_available":  LLM_OK and gemini_key,
-        "groq_available": GROQ_OK and groq_key,
+        "status":       "online",
+        "groq_api_key": "SET" if groq_key else "MISSING",
+        "groq_test":    groq_test,
+        "groq_status":  groq_status,
+        "llm":          "Groq LLaMA 3",
+        "llm_available": groq_key and GROQ_OK,
         "routing": {
-            "resume_analysis":   "Gemini 1.5 Flash",
-            "job_scoring":       "Gemini 1.5 Flash",
-            "resume_rewriting":  "Gemini 1.5 Flash",
-            "mock_interview":    "Groq LLaMA 3 70B",
-            "answer_scoring":    "Groq LLaMA 3 70B",
-            "daily_coach":       "Groq LLaMA 3 8B",
-            "coach_feedback":    "Groq LLaMA 3 70B",
-            "fallback":          "Groq → Gemini if Groq fails",
+            "all_features": "Groq LLaMA 3 (llama3-70b-8192)",
+            "conversation": "Groq LLaMA 3 (llama3-8b-8192)",
         }
     }
 
 @app.get("/api/diagnose")
 async def diagnose():
     results = {}
-    gemini_key = os.getenv("GOOGLE_API_KEY","").strip()
     groq_key = os.getenv("GROQ_API_KEY","").strip()
 
-    results["GOOGLE_API_KEY"] = "✅ SET" if gemini_key else "❌ MISSING"
     results["GROQ_API_KEY"] = "✅ SET" if groq_key else "❌ MISSING"
-
-    # Diagnose Gemini
-    if gemini_key and LLM_OK:
-        try:
-            r = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, lambda: call_gemini("Say OK")),
-                timeout=10.0
-            )
-            results["gemini_llm"] = f"✅ {r[:40]}" if not r.startswith("ERROR:") else f"❌ {r[:80]}"
-            results["gemini_embeddings"] = "✅ OK"
-        except Exception as e:
-            results["gemini_llm"] = f"❌ {str(e)[:80]}"
-            results["gemini_embeddings"] = "❌ Failed"
-    else:
-        results["gemini_llm"] = "❌ GOOGLE_API_KEY missing"
-        results["gemini_embeddings"] = "❌ Failed"
 
     # Diagnose Groq (Llama)
     if groq_key and GROQ_OK:
@@ -467,77 +377,61 @@ async def upload_resume(file: UploadFile = File(...)):
 @app.post("/analyze")
 @app.post("/api/analyze")
 async def analyze_resume(request: dict):
-    path    = request.get("file_path") or request.get("resume_path") or ""
-    job_desc = request.get("job_description") or request.get("job_query") or ""
-    user_id = request.get("user_id") or request.get("user_id", "anon")
+    path     = request.get("resume_path", "") or request.get("file_path", "")
+    job_desc = request.get("job_description", "") or request.get("job_query", "") or ""
+    user_id  = request.get("user_id", "anon")
 
     if not path or not os.path.exists(path):
-        raise HTTPException(404, f"Resume not found at path: {path}")
+        raise HTTPException(404, f"Resume not found: {path}")
 
     text = extract_pdf_text(path)
     if not text or len(text) < 20:
-        raise HTTPException(422, "Cannot extract text from PDF. Ensure it is not a scanned image.")
+        raise HTTPException(422, "Cannot extract text. Ensure PDF is not a scanned image.")
 
+    # Calculate real ATS score deterministically
     from utils.ats_scorer import calculate_real_ats_score
     ats_data = calculate_real_ats_score(text, job_desc)
     real_ats_score = ats_data["ats_score"]
 
+    # Truncate to fit Groq context window (keep first 3000 chars = full resume)
+    text_truncated = text[:3000]
+
+    system = (
+        "You are an expert resume analyst and career coach. "
+        "You return ONLY valid JSON — no markdown, no backticks, no explanation."
+    )
+
     prompt = (
-        f"You are an expert resume analyst. A deterministic ATS scanner has already scored this resume.\n"
+        f"Analyze this resume and return ONLY valid JSON. A deterministic ATS scanner has already scored this resume.\n"
         f"Your job is to provide QUALITATIVE feedback only — do NOT invent or change the ATS score.\n\n"
         f"DETERMINISTIC ATS SCORE (use this exactly): {real_ats_score}/100\n"
         f"Score breakdown: {ats_data['score_breakdown']}\n"
         f"Missing keywords: {ats_data['missing_keywords'][:10]}\n"
         f"Missing sections: {ats_data['missing_sections']}\n"
         f"Issues found: {ats_data['feedback']}\n\n"
-        f"Resume text:\n{text[:2000]}\n\n"
-        f"Provide exactly this JSON:\n"
-        f'{{"overall_score": 75,'
-        f'"ats_score": {real_ats_score},'
-        f'"skills_found": ["Python","React"],'
-        f'"skill_gaps": ["Docker"],'
-        f'"suggestions": ["Add metrics to bullets"],'
-        f'"experience_level": "junior",'
-        f'"summary": "Honest 2-sentence summary."}}'
+        f"Resume:\n{text_truncated}\n\n"
+        f"Job description (optional): {job_desc[:300] or 'not provided'}\n\n"
+        f"Return exactly this JSON structure:\n"
+        f'{{"skills_found":["Python","React","FastAPI"],'
+        f'"skill_gaps":["Docker","Kubernetes","MLOps"],'
+        f'"experience_level":"junior",'
+        f'"overall_score":72,'
+        f'"ats_score":{real_ats_score},'
+        f'"sections_detected":["Education","Experience","Projects","Skills"],'
+        f'"suggestions":["Add quantified metrics","Include GitHub link"],'
+        f'"summary":"2-sentence honest assessment"}}'
     )
 
-    raw    = await call_gemini_async(prompt, timeout=30.0)
-    result = parse_json(raw, {
-        "skills_found":      [],
-        "skill_gaps":        [],
-        "experience_level":  "junior",
-        "overall_score":     55,
-        "ats_score":         real_ats_score,
-        "suggestions":       ["Could not analyze qualitatively — check API key"],
-        "summary":           "Holistic assessment unavailable.",
-    })
-
-    result["ats_score"] = real_ats_score
-    result["ats_breakdown"] = ats_data["score_breakdown"]
-    result["found_keywords"] = ats_data["found_keywords"]
-    result["missing_keywords"] = ats_data["missing_keywords"]
-    result["missing_sections"] = ats_data["missing_sections"]
-    result["feedback"] = ats_data["feedback"]
-    result["grade"] = ats_data["grade"]
-    result["resume_text"] = text
-
-    _cache[f"analysis:{user_id}"] = result
-    _cache[f"text:{path}"]        = text
-    return result
-
-# ── Jobs ───────────────────────────────────────────────────────────
-@app.get("/jobs")
+    raw    = await call_groq_async(
+        prompt=prompt,
+  @app.get("/jobs")
 @app.get("/api/jobs")
-async def get_jobs(
-    q:        str = "Software Engineer",
-    location: str = "India",
-    user_id:  str = "anon",
-):
+async def get_jobs(q: str = "Software Engineer", location: str = "India", user_id: str = "anon"):
     import httpx
     jobs = []
 
-    # JSearch
-    rk = os.getenv("RAPIDAPI_KEY", "").strip()
+    # Fetch jobs (unchanged — no LLM needed for fetching)
+    rk = os.getenv("RAPIDAPI_KEY","").strip()
     if rk:
         try:
             async with httpx.AsyncClient(timeout=7.0) as c:
@@ -548,60 +442,62 @@ async def get_jobs(
                 )
                 for j in r.json().get("data", [])[:10]:
                     jobs.append({
-                        "id":          j.get("job_id",""),
-                        "title":       j.get("job_title",""),
-                        "company":     j.get("employer_name",""),
-                        "location":    j.get("job_city", location),
+                        "id": j.get("job_id",""),
+                        "title": j.get("job_title",""),
+                        "company": j.get("employer_name",""),
+                        "location": j.get("job_city", location),
                         "description": (j.get("job_description") or "")[:400],
-                        "apply_link":  j.get("job_apply_link","#"),
-                        "salary":      "",
-                        "source":      "jsearch",
+                        "apply_link": j.get("job_apply_link","#"),
+                        "salary": "",
+                        "source": "jsearch",
                         "match_score": 0,
                     })
         except Exception as e:
             print(f"JSearch error: {e}")
 
-    # Adzuna fallback
-    ai = os.getenv("ADZUNA_APP_ID","").strip()
-    ak = os.getenv("ADZUNA_APP_KEY","").strip()
-    if not jobs and ai and ak:
-        try:
-            async with httpx.AsyncClient(timeout=7.0) as c:
-                r = await c.get(
-                    "https://api.adzuna.com/v1/api/jobs/in/search/1",
-                    params={"app_id": ai, "app_key": ak, "what": q, "where": location, "results_per_page": 10},
-                )
-                for j in r.json().get("results", [])[:10]:
-                    jobs.append({
-                        "id":          str(j.get("id","")),
-                        "title":       j.get("title",""),
-                        "company":     j.get("company",{}).get("display_name",""),
-                        "location":    j.get("location",{}).get("display_name", location),
-                        "description": (j.get("description") or "")[:400],
-                        "apply_link":  j.get("redirect_url","#"),
-                        "salary":      str(j.get("salary_max","")),
-                        "source":      "adzuna",
-                        "match_score": 0,
-                    })
-        except Exception as e:
-            print(f"Adzuna error: {e}")
-
-    # Demo fallback — always returns something
+    # Demo fallback
     if not jobs:
         jobs = [
-            {"id":"d1","title":f"Senior {q}","company":"TechCorp India","location":location,
-             "description":f"Senior {q} role with Python, React, FastAPI. 2+ years exp.","apply_link":"https://linkedin.com/jobs","salary":"12-20 LPA","source":"demo","match_score":88,"matched_skills":["Python","React"],"missing_skills":["Docker"],"recommendation":"Strong match"},
-            {"id":"d2","title":f"AI/ML {q}","company":"InnovateTech","location":"Hyderabad",
-             "description":f"AI {q} role. LangChain, Gemini, RAG, FastAPI.","apply_link":"https://linkedin.com/jobs","salary":"8-15 LPA","source":"demo","match_score":92,"matched_skills":["LangChain","Python"],"missing_skills":[],"recommendation":"Excellent match"},
-            {"id":"d3","title":f"Full Stack {q}","company":"GlobalTech","location":"Remote",
-             "description":f"Remote {q}. React, Node.js, Python, Docker.","apply_link":"https://linkedin.com/jobs","salary":"10-18 LPA","source":"demo","match_score":78,"matched_skills":["React","Python"],"missing_skills":["AWS"],"recommendation":"Good match"},
-            {"id":"d4","title":f"Junior {q}","company":"StartupXYZ","location":"Mumbai",
-             "description":f"Junior {q} for freshers. React, Python, Firebase.","apply_link":"https://linkedin.com/jobs","salary":"4-8 LPA","source":"demo","match_score":82,"matched_skills":["React","Python","Firebase"],"missing_skills":[],"recommendation":"Great entry-level fit"},
-            {"id":"d5","title":f"Backend {q}","company":"FinTech Corp","location":"Pune",
-             "description":f"Backend {q}. Python, FastAPI, PostgreSQL, Redis.","apply_link":"https://linkedin.com/jobs","salary":"8-14 LPA","source":"demo","match_score":74,"matched_skills":["Python","FastAPI"],"missing_skills":["PostgreSQL"],"recommendation":"Good match"},
-            {"id":"d6","title":f"{q} Intern","company":"MNC Corp","location":"Ahmedabad",
-             "description":f"6-month {q} internship. Python, JavaScript, REST APIs.","apply_link":"https://linkedin.com/jobs","salary":"15000-25000/month","source":"demo","match_score":76,"matched_skills":["Python","JavaScript"],"missing_skills":[],"recommendation":"Good fit for freshers"},
+            {"id":"d1","title":f"Senior {q}","company":"TechCorp India","location":location,"description":f"Senior {q} with Python, React, FastAPI. 2+ years exp.","apply_link":"https://linkedin.com/jobs","salary":"12-20 LPA","source":"demo","match_score":88,"matched_skills":["Python","React"],"missing_skills":["Docker"],"recommendation":"Strong match"},
+            {"id":"d2","title":f"AI/ML {q}","company":"InnovateTech","location":"Hyderabad","description":f"AI {q} role. LangChain, Gemini, RAG, FastAPI.","apply_link":"https://linkedin.com/jobs","salary":"8-15 LPA","source":"demo","match_score":92,"matched_skills":["LangChain","Python"],"missing_skills":[],"recommendation":"Excellent match"},
+            {"id":"d3","title":f"Full Stack {q}","company":"GlobalTech","location":"Remote","description":f"Remote {q}. React, Node.js, Python, Docker.","apply_link":"https://linkedin.com/jobs","salary":"10-18 LPA","source":"demo","match_score":78,"matched_skills":["React","Python"],"missing_skills":["AWS"],"recommendation":"Good match"},
+            {"id":"d4","title":f"Junior {q}","company":"StartupXYZ","location":"Mumbai","description":f"Junior {q} for freshers. React, Python, Firebase.","apply_link":"https://linkedin.com/jobs","salary":"4-8 LPA","source":"demo","match_score":82,"matched_skills":["React","Python","Firebase"],"missing_skills":[],"recommendation":"Great entry-level fit"},
+            {"id":"d5","title":f"Backend {q}","company":"FinTech Corp","location":"Pune","description":f"Backend {q}. Python, FastAPI, PostgreSQL.","apply_link":"https://linkedin.com/jobs","salary":"8-14 LPA","source":"demo","match_score":74,"matched_skills":["Python","FastAPI"],"missing_skills":["PostgreSQL"],"recommendation":"Good match"},
+            {"id":"d6","title":f"{q} Intern","company":"MNC Corp","location":"Ahmedabad","description":f"6-month {q} internship. Python, JavaScript.","apply_link":"https://linkedin.com/jobs","salary":"15000-25000/month","source":"demo","match_score":76,"matched_skills":["Python","JavaScript"],"missing_skills":[],"recommendation":"Good for freshers"},
         ]
+
+    # Score with Groq if profile available
+    analysis = _cache.get(f"analysis:{user_id}", {})
+    skills   = analysis.get("skills_found", [])
+
+    if skills and GROQ_OK and os.getenv("GROQ_API_KEY"):
+        profile = f"Skills: {', '.join(skills[:10])}. Level: {analysis.get('experience_level','junior')}"
+
+        async def score_one(job):
+            try:
+                raw = await call_groq_async(
+                    prompt=(
+                        f"Rate job fit 0-100. Return ONLY JSON.\n"
+                        f"Profile: {profile}\n"
+                        f"Job: {job['title']} — {job['description'][:150]}\n"
+                        f'{{"match_score":75,"matched_skills":["Python"],"missing_skills":["Docker"],"recommendation":"Good match"}}'
+                    ),
+                    model="llama3-8b-8192",
+                    max_tokens=150,
+                    temperature=0.1,
+                    timeout=8.0,
+                )
+                scored = parse_json(raw, {})
+                if scored.get("match_score"):
+                    job.update(scored)
+            except Exception:
+                pass
+            return job
+
+        scored = await asyncio.gather(*[score_one(j) for j in jobs[:6]], return_exceptions=True)
+        for i, r in enumerate(scored):
+            if isinstance(r, dict):
+                jobs[i] = r
 
     jobs.sort(key=lambda x: x.get("match_score", 0), reverse=True)
     return {"jobs": jobs, "count": len(jobs), "source": jobs[0].get("source","demo") if jobs else "none"}
@@ -613,79 +509,73 @@ async def rewrite_resume(request: dict):
     path      = request.get("resume_path", "") or request.get("file_path", "")
     job       = request.get("job", {})
     job_title = str(job.get("title") or "Software Engineer")
-    job_desc  = str(job.get("description") or "")[:500]
+    job_desc  = str(job.get("description") or "")[:400]
 
     if not path or not os.path.exists(path):
         raise HTTPException(404, f"Resume not found: {path}")
 
-    # Get original text (use cache if available)
-    original_text = _cache.get(f"text:{path}") or ""
-    if not original_text:
-        try:
-            from tools.pdf_tool import pdf_handler
-            original_text = pdf_handler.extract_text_for_ai(path)
-        except ImportError:
-            original_text = extract_pdf_text(path)
-        _cache[f"text:{path}"] = original_text
+    original_text = _cache.get(f"text:{path}") or extract_pdf_text(path)
+    _cache[f"text:{path}"] = original_text
 
-    # Calculate original ATS score and extract missing keywords
+    # Smart truncation for Groq context limit
+    # Keep full resume — 3000 chars covers any resume
+    resume_truncated = original_text[:3000]
+
+    system = (
+        "You are a professional resume writer improving ATS scores. "
+        "You follow instructions exactly. You return only the resume text, nothing else."
+    )
+
+    prompt = (
+        f"Rewrite this resume to maximize ATS score for the target job.\n\n"
+        f"CRITICAL RULES — FOLLOW EXACTLY:\n"
+        f"1. Keep ALL section headers unchanged: Education, Experience, Projects, "
+        f"Certifications, CORE SKILLS, Achievements and Positions of Responsibility\n"
+        f"2. Keep ALL names, dates, companies, CGPA, percentages UNCHANGED\n"
+        f"3. Keep ALL bullet markers (•) exactly as-is\n"
+        f"4. NEVER add [Email] [LinkedIn] [GitHub] [Phone] placeholders\n"
+        f"5. NEVER add or remove lines — same line count as input\n"
+        f"6. ONLY improve bullet point descriptions and project descriptions\n"
+        f"7. Add these keywords naturally: {job_desc[:200]}\n"
+        f"8. Quantify vague statements with realistic numbers\n"
+        f"9. Use action verbs: Built, Engineered, Deployed, Optimized, Implemented\n"
+        f"10. Return ONLY the resume text — no explanation\n\n"
+        f"Target Job: {job_title}\n\n"
+        f"Original Resume:\n{resume_truncated}"
+    )
+
+    rewritten = await call_groq_async(
+        prompt=prompt,
+        system=system,
+        model="llama3-70b-8192",
+        max_tokens=2000,
+        temperature=0.2,
+        timeout=35.0,
+    )
+
+    if not rewritten or rewritten.startswith("ERROR:"):
+        rewritten = original_text
+
+    # Clean placeholders
+    for pat in [r'\[Email\]', r'\[LinkedIn\]', r'\[GitHub\]',
+                r'\[Phone\]', r'\[URL\]', r'\[Website\]']:
+        rewritten = re.sub(pat, '', rewritten, flags=re.IGNORECASE)
+    rewritten = re.sub(r'\s*\|\s*\|\s*', ' ', rewritten)
+
+    # ATS scoring
     from utils.ats_scorer import calculate_real_ats_score
     orig_ats_data = calculate_real_ats_score(original_text, job_desc)
     orig_ats_score = orig_ats_data["ats_score"]
-    missing_keywords = orig_ats_data["missing_keywords"]
-
-    # Strict Gemini prompt — preserves structure
-    prompt = f"""You are a professional resume editor improving ATS score.
-Rewrite this resume to better match the target job.
-
-STRICT RULES — these will corrupt the PDF if broken:
-1. Output EXACTLY the same number of lines as the input
-2. Keep ALL section headers word-for-word unchanged:
-   Education, Experience, Projects, Certifications, CORE SKILLS,
-   Achievements and Positions of Responsibility
-3. Keep ALL names, universities, schools, companies, dates, CGPA, percentages UNCHANGED
-4. Keep ALL bullet point markers (•) exactly as-is
-5. NEVER add placeholder text like [Email] [LinkedIn] [GitHub] [Phone]
-6. NEVER merge two lines or split one line into two
-7. NEVER change bold/italic markers or formatting
-8. ONLY improve: bullet point descriptions and project descriptions
-9. Add ATS keywords from job description naturally into existing sentences
-10. Quantify achievements with realistic numbers where vague
-11. Use strong action verbs: Engineered, Built, Deployed, Optimized, Implemented
-12. Return ONLY the resume text — no explanation, no preamble
-
-Original Resume ({len(original_text.split(chr(10)))} lines — match this count):
-{original_text[:2500]}
-
-Target Job: {job_title}
-Keywords to add: {job_desc[:300]}
-
-Rewritten resume (same line count, same structure):"""
-
-    rewritten = await call_gemini_async(prompt, timeout=40.0)
-
-    if not rewritten or rewritten.startswith("ERROR:"):
-        rewritten = original_text  # return original if Gemini fails
-
-    # Strip any placeholders Gemini added anyway
-    for pattern in [r'\[Email\]', r'\[LinkedIn\]', r'\[GitHub\]',
-                    r'\[Phone\]', r'\[URL\]', r'\[Website\]', r'\[Name\]']:
-        rewritten = re.sub(pattern, '', rewritten, flags=re.IGNORECASE)
-    # Clean double pipes/spaces from placeholder removal
-    rewritten = re.sub(r'\s*\|\s*\|\s*', ' ', rewritten)
-    rewritten = re.sub(r'^\s*\|\s*', '', rewritten, flags=re.MULTILINE)
-
-    # Calculate keywords added and ATS scores
-    jw     = set(w.lower() for w in job_desc.split() if len(w) > 5)
-    ow     = set(original_text.lower().split())
-    nw     = set(rewritten.lower().split())
-    kw_add = list((jw & nw) - ow)[:12]
-
-    # Recalculate ATS score deterministically
+    
     new_ats_data = calculate_real_ats_score(rewritten, job_desc)
     new_ats_score = new_ats_data["ats_score"]
 
-    # Build rewritten PDF preserving original formatting
+    jw  = set(w.lower() for w in job_desc.split() if len(w) > 5)
+    ow  = set(original_text.lower().split())
+    nw  = set(rewritten.lower().split())
+    kwa = list((jw & nw) - ow)[:12]
+
+    # Build PDF preserving formatting
     pdf_path = None
     try:
         from tools.pdf_tool import pdf_handler
@@ -694,31 +584,26 @@ Rewritten resume (same line count, same structure):"""
             original_text=original_text,
             rewritten_text=rewritten,
         )
-        # Save to temp file for download endpoint
         import tempfile
         tmp = tempfile.NamedTemporaryFile(
-            suffix=".pdf",
-            prefix="rewritten_",
-            dir="data/uploads",
-            delete=False
+            suffix=".pdf", prefix="rewritten_",
+            dir="data/uploads", delete=False
         )
         tmp.write(pdf_bytes)
         tmp.close()
         pdf_path = tmp.name
-        print(f"✅ Rewritten PDF saved: {pdf_path}")
     except Exception as e:
-        print(f"⚠️ PDF rebuild failed: {e} — text-only mode")
-        import traceback; traceback.print_exc()
+        print(f"⚠️ PDF rebuild failed: {e}")
 
     return {
-        "original_text":       original_text,
-        "rewritten_text":      rewritten,
-        "keywords_added":      kw_add,
-        "rewritten_pdf_path":  pdf_path,
+        "original_text":      original_text,
+        "rewritten_text":     rewritten,
+        "keywords_added":     kwa,
+        "rewritten_pdf_path": pdf_path,
         "changes_summary": [
-            f"Added {len(kw_add)} ATS keywords from job description",
+            f"Added {len(kwa)} ATS keywords from job description",
             "Strengthened bullet points with action verbs",
-            "Preserved exact original formatting — logo, photo, layout intact",
+            "Preserved exact original formatting",
             "Quantified achievements where possible",
         ],
         "ats_scores": {
@@ -1078,7 +963,7 @@ async def coach_respond(request: dict):
 
     # ── USE GROQ WITH MULTI-TURN CONVERSATION ───────────────────
     try:
-        client = get_groq_client()
+        client = get_groq()
         if client:
             loop   = asyncio.get_event_loop()
             result = await asyncio.wait_for(
@@ -1098,20 +983,27 @@ async def coach_respond(request: dict):
             raise Exception("Groq client not available")
 
     except Exception as e:
-        print(f"⚠️ Groq coach failed: {e}, falling back to Gemini")
-        # Fallback to Gemini with simple prompt
+        print(f"⚠️ Groq coach failed: {e}")
+        # Fallback to general Groq wrapper (will try rate-limit fallback too)
         hist_str = "\n".join(
             f"{m.get('role','').upper()}: {m.get('content','')[:60]}"
             for m in (history or [])[-4:]
             if isinstance(m, dict)
         )
-        gemini_prompt = (
+        groq_prompt = (
             f"You are Aria, a warm English coach. Have a natural 2-3 sentence conversation reply. "
             f"End with a question. No lists or bullet points.\n\n"
             f"History:\n{hist_str}\n\n"
             f"Student: {msg}\n\nAria:"
         )
-        reply = await call_gemini_async(gemini_prompt, timeout=15.0)
+        reply = await call_groq_async(
+            prompt=groq_prompt,
+            system="You are Aria, a warm English coach.",
+            model="llama3-8b-8192",
+            max_tokens=200,
+            temperature=0.85,
+            timeout=10.0
+        )
 
     # Clean up reply
     reply = (reply or "").strip()

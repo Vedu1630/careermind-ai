@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { FileEdit, Download, Tag, CheckCircle, Loader2, AlertCircle, ArrowRight, Upload } from 'lucide-react'
@@ -7,10 +7,11 @@ import { rewriteResume, getUserId } from '../lib/api'
 import ReactDiffViewer from 'react-diff-viewer-continued'
 import SkillBadge from '../components/SkillBadge'
 import axios from 'axios'
+import { BACKEND_URL } from '../lib/api'
 
 export default function ResumeRewriter() {
   const navigate = useNavigate()
-  const { resume, jobs, rewrite, setRewriteResult, setRewriteLoading } = useStore()
+  const { resume, rewrite, jobs, setRewrite, setRewriteResult, setRewriteLoading } = useStore()
 
   const [error, setError] = useState('')
   const [isDownloading, setIsDownloading] = useState(false)
@@ -20,7 +21,83 @@ export default function ResumeRewriter() {
   const [verifiedScore, setVerifiedScore] = useState(null)
   const [isVerifying, setIsVerifying] = useState(false)
 
-  const selectedJob = jobs.selectedJob
+  // Clear stale rewrite data on mount if no resume uploaded
+  useEffect(() => {
+    if (!resume?.path && !resume?.text) {
+      // No resume uploaded — clear stale rewrite data
+      setRewrite({
+        original:       null,
+        rewritten:      null,
+        changesSummary: [],
+        keywordsAdded:  [],
+        atsScores:      null,
+        pdfPath:        null,
+      });
+    }
+  }, []);
+
+  // If no resume uploaded and no selected job — show upload prompt
+  if (!resume?.path && !resume?.text && !rewrite?.rewritten) {
+    return (
+      <div className="max-w-3xl mx-auto px-6 py-16 text-center">
+        <div className="w-16 h-16 bg-[#F0EEFF] rounded-2xl flex items-center
+                        justify-center mx-auto mb-5">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <rect x="4" y="2" width="20" height="24" rx="3"
+              stroke="#6B5CE7" strokeWidth="1.5" fill="none"/>
+            <path d="M8 9h12M8 13h8M8 17h6"
+              stroke="#6B5CE7" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <h2 className="text-2xl font-extrabold text-[#111] tracking-tight mb-2">
+          No Resume Uploaded
+        </h2>
+        <p className="text-[#888] text-sm mb-6 leading-relaxed">
+          You need to upload and analyze your resume first,
+          then select a job to tailor it for.
+        </p>
+        <div className="flex gap-3 justify-center">
+          <button
+            onClick={() => navigate("/upload")}
+            className="px-6 py-3 bg-gradient-to-r from-[#6B5CE7] to-[#8B7CF8]
+                       rounded-xl text-sm font-bold text-white hover:opacity-90"
+          >
+            Upload Resume →
+          </button>
+          <button
+            onClick={() => navigate("/jobs")}
+            className="px-6 py-3 bg-white border border-[#E8E4FF] rounded-xl
+                       text-sm font-semibold text-[#6B5CE7] hover:bg-[#F0EEFF]"
+          >
+            Browse Jobs
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // If resume uploaded but no job selected
+  const selectedJob = jobs?.selectedJob;
+  if (resume?.path && !selectedJob && !rewrite?.rewritten) {
+    return (
+      <div className="max-w-3xl mx-auto px-6 py-16 text-center">
+        <div className="text-4xl mb-4">💼</div>
+        <h2 className="text-2xl font-extrabold text-[#111] tracking-tight mb-2">
+          Select a Job First
+        </h2>
+        <p className="text-[#888] text-sm mb-6">
+          Go to Job Matches, find a role you like, and click "Tailor Resume".
+        </p>
+        <button
+          onClick={() => navigate("/jobs")}
+          className="px-6 py-3 bg-gradient-to-r from-[#6B5CE7] to-[#8B7CF8]
+                     rounded-xl text-sm font-bold text-white hover:opacity-90"
+        >
+          Find Job Matches →
+        </button>
+      </div>
+    );
+  }
 
   const rewriteData = {
     ...rewrite,

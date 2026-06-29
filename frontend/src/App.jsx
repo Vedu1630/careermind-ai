@@ -16,108 +16,59 @@ import api, { BACKEND_URL, wakeUpBackend } from "./lib/api";
 import axios from "axios";
 
 export function BackendStatus() {
-  const [status,  setStatus]  = useState("checking");
-  const [detail,  setDetail]  = useState("");
+  const [status, setStatus] = useState("checking");
+  const [detail, setDetail] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-
     const check = async () => {
       try {
-        const res = await axios.get(
-          `${BACKEND_URL}/health`,
-          { timeout: 90000 }
-        );
+        const res = await axios.get(`${BACKEND_URL}/health`, { timeout: 90000 });
         if (cancelled) return;
-
         const data = res.data;
 
-        // Backend is up — now check what's actually wrong
-        if (data?.status === "online" || data?.message) {
-
-          // Check if Google API key is genuinely missing
-          const keyMissing = (
-            data?.google_api_key === "MISSING" ||
-            data?.env_vars?.GOOGLE_API_KEY?.includes("❌")
-          );
-
-          if (keyMissing) {
-            // Key is genuinely not set in Render
-            setStatus("no-key");
-            setDetail("GOOGLE_API_KEY is not set in Render → Environment");
+        if (data?.status === "online") {
+          const groqKeyMissing = data?.groq_api_key === "MISSING";
+          if (groqKeyMissing) {
+            setStatus("no-groq-key");
             return;
           }
-
-          // Key is set — check Gemini status
-          const geminiStatus = data?.gemini_status;
-          const geminiTest   = data?.gemini_test || "";
-
-          if (geminiStatus === "ok" || geminiTest.includes("✅")) {
-            // Everything working perfectly
+          const groqStatus = data?.groq_status;
+          if (groqStatus === "ok" || groqStatus === "timeout") {
             setStatus("ok");
-            return;
-          }
-
-          if (geminiStatus === "timeout" || geminiTest.includes("timed out")) {
-            // Key is set but Gemini was slow — this is fine, just cold start
-            // Show as OK — the key IS there, Gemini will work for real requests
+          } else if (groqStatus === "error") {
+            setStatus("groq-error");
+            setDetail(data?.groq_test || "");
+          } else {
             setStatus("ok");
-            return;
           }
-
-          if (geminiStatus === "error" && geminiTest.includes("❌")) {
-            // Real Gemini error — key might be invalid
-            setStatus("gemini-error");
-            setDetail(geminiTest);
-            return;
-          }
-
-          // Backend is up and key is set — consider it OK
-          setStatus("ok");
         }
-      } catch (err) {
-        if (cancelled) return;
-        if (!err.response) {
-          setStatus("down");
-        } else {
-          // Got any response — backend is running
-          setStatus("ok");
-        }
+      } catch {
+        if (!cancelled) setStatus("down");
       }
     };
-
     check();
-    const interval = setInterval(check, 35000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+    const iv = setInterval(check, 30000);
+    return () => { cancelled = true; clearInterval(iv); };
   }, []);
 
-  // Hide when everything is fine
   if (status === "ok" || status === "checking") return null;
 
-  const messages = {
-    down: `⚠️ Backend not reachable at ${BACKEND_URL} — check Render dashboard`,
-    "no-key": "🔑 GOOGLE_API_KEY not set in Render → Environment → Add GOOGLE_API_KEY",
-    "gemini-error": `⚠️ Gemini API issue: ${detail} — check your API key at aistudio.google.com`,
-    waking: "⏳ Backend waking up from sleep — please wait 30 seconds then refresh",
+  const msgs = {
+    down:         `⚠️ Backend not reachable at ${BACKEND_URL}`,
+    "no-groq-key":"🔑 GROQ_API_KEY missing — add it in Render → Environment → GROQ_API_KEY (get free at console.groq.com)",
+    "groq-error": `⚠️ Groq API issue: ${detail} — check your API key at console.groq.com`,
   };
 
   const colors = {
-    down:          "bg-red-50 border-red-100 text-red-700",
-    "no-key":      "bg-amber-50 border-amber-100 text-amber-700",
-    "gemini-error":"bg-amber-50 border-amber-100 text-amber-700",
-    waking:        "bg-blue-50 border-blue-100 text-blue-700",
+    down:         "bg-red-50 border-red-100 text-red-700",
+    "no-groq-key":"bg-amber-50 border-amber-100 text-amber-700",
+    "groq-error": "bg-amber-50 border-amber-100 text-amber-700",
   };
 
-  const msg   = messages[status];
-  const color = colors[status];
-  if (!msg) return null;
-
   return (
-    <div className={`w-full px-4 py-2 text-center text-xs font-medium border-b ${color} z-[200]`}>
-      {msg}
+    <div className={`w-full px-4 py-2 text-center text-xs font-medium border-b ${colors[status] || ""}`}>
+      {msgs[status] || ""}
     </div>
   );
 }
