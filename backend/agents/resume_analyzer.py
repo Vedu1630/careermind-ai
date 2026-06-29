@@ -72,12 +72,7 @@ GENERAL_TECH_KEYWORDS = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 def extract_pdf_text(file_path: str) -> str:
-    """Extract text from PDF, cache by file path."""
-    cache = get_cache()
-    cache_key = f"pdf_text:{file_path}"
-    if cache_key in cache:
-        return cache[cache_key]
-
+    """Extract text from PDF."""
     text = ""
     try:
         import fitz  # PyMuPDF
@@ -96,7 +91,6 @@ def extract_pdf_text(file_path: str) -> str:
         except Exception as e2:
             text = f"[PDF extraction failed: {e2}]"
 
-    cache[cache_key] = text
     return text
 
 

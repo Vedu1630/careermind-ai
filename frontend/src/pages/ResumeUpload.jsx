@@ -139,6 +139,7 @@ export default function ResumeUpload() {
       return
     }
 
+    setResumeAnalysis(null)
     setFile(selectedFile)
     setStatus('uploading')
     setProgress(10)
@@ -585,7 +586,7 @@ export default function ResumeUpload() {
                 <motion.button
                   whileHover={{ scale: 1.03 }}
                   whileTap={{ scale: 0.97 }}
-                  onClick={() => { setStatus('idle'); setFile(null) }}
+                  onClick={() => { setStatus('idle'); setFile(null); setResumeAnalysis(null); }}
                   className="py-4 px-6 bg-white border border-[#E8E4FF] text-[#6B5CE7] font-semibold rounded-xl hover:border-[#6B5CE7] transition-colors"
                 >
                   Upload Different Resume
