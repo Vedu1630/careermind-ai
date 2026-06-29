@@ -136,6 +136,20 @@ export default function ResumeUpload() {
     }
   }, [resume?.analysis, status])
 
+  // Helper to ensure all array items are strings, since LLMs sometimes return objects (e.g. {action, description})
+  const ensureStringArray = (arr) => {
+    if (!Array.isArray(arr)) return [];
+    return arr.map(item => {
+      if (typeof item === 'string') return item;
+      if (!item) return '';
+      if (typeof item === 'object') {
+        if (item.action && item.description) return `${item.action}: ${item.description}`;
+        return item.description || item.action || item.name || item.label || item.title || JSON.stringify(item);
+      }
+      return String(item);
+    }).filter(Boolean);
+  };
+
   const rawAnalysis = resume?.analysis
   // ── Normalize analysis data to prevent crashes from unexpected API shapes ──
   const analysis = rawAnalysis ? {
@@ -147,12 +161,12 @@ export default function ResumeUpload() {
       ? rawAnalysis.ats_breakdown : null,
     overall_breakdown: rawAnalysis.overall_breakdown && typeof rawAnalysis.overall_breakdown === 'object' && !Array.isArray(rawAnalysis.overall_breakdown)
       ? rawAnalysis.overall_breakdown : null,
-    skills_found: Array.isArray(rawAnalysis.skills_found) ? rawAnalysis.skills_found : [],
-    skill_gaps: Array.isArray(rawAnalysis.skill_gaps) ? rawAnalysis.skill_gaps : [],
-    missing_keywords: Array.isArray(rawAnalysis.missing_keywords) ? rawAnalysis.missing_keywords : [],
-    sections_detected: Array.isArray(rawAnalysis.sections_detected) ? rawAnalysis.sections_detected : [],
-    suggestions: Array.isArray(rawAnalysis.suggestions) ? rawAnalysis.suggestions : [],
-    feedback: Array.isArray(rawAnalysis.feedback) ? rawAnalysis.feedback : [],
+    skills_found: ensureStringArray(rawAnalysis.skills_found),
+    skill_gaps: ensureStringArray(rawAnalysis.skill_gaps),
+    missing_keywords: ensureStringArray(rawAnalysis.missing_keywords),
+    sections_detected: ensureStringArray(rawAnalysis.sections_detected),
+    suggestions: ensureStringArray(rawAnalysis.suggestions),
+    feedback: ensureStringArray(rawAnalysis.feedback),
   } : null
   const analysisData = analysis
 
