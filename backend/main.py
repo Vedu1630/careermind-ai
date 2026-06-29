@@ -93,7 +93,7 @@ def get_groq():
 def call_groq(
     prompt:      str,
     system:      str   = "You are a helpful AI assistant. Be concise and accurate.",
-    model:       str   = "llama3-70b-8192",
+    model:       str   = "llama-3.3-70b-versatile",
     max_tokens:  int   = 1000,
     temperature: float = 0.3,
 ) -> str:
@@ -122,11 +122,11 @@ def call_groq(
         print(f"❌ Groq call failed ({model}): {err[:100]}")
         if "rate_limit" in err.lower() or "429" in err:
             # Rate limited — try smaller model
-            if model != "llama3-8b-8192":
+            if model != "llama-3.1-8b-instant":
                 print("⚠️ Rate limited on 70b, retrying with 8b")
                 try:
                     response = client.chat.completions.create(
-                        model="llama3-8b-8192",
+                        model="llama-3.1-8b-instant",
                         messages=[
                             {"role": "system", "content": system},
                             {"role": "user",   "content": prompt},
@@ -145,7 +145,7 @@ def call_groq(
 async def call_groq_async(
     prompt:      str,
     system:      str   = "You are a helpful AI assistant.",
-    model:       str   = "llama3-70b-8192",
+    model:       str   = "llama-3.3-70b-versatile",
     max_tokens:  int   = 1000,
     temperature: float = 0.3,
     timeout:     float = 25.0,
@@ -297,7 +297,7 @@ async def health():
             result = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: call_groq("Say WORKING", max_tokens=5, model="llama3-8b-8192")
+                    lambda: call_groq("Say WORKING", max_tokens=5, model="llama-3.1-8b-instant")
                 ),
                 timeout=8.0
             )
@@ -322,8 +322,8 @@ async def health():
         "llm":          "Groq LLaMA 3",
         "llm_available": groq_key and GROQ_OK,
         "routing": {
-            "all_features": "Groq LLaMA 3 (llama3-70b-8192)",
-            "conversation": "Groq LLaMA 3 (llama3-8b-8192)",
+            "all_features": "Groq LLaMA 3 (llama-3.3-70b-versatile)",
+            "conversation": "Groq LLaMA 3 (llama-3.1-8b-instant)",
         }
     }
 
@@ -425,7 +425,7 @@ async def analyze_resume(request: dict):
     raw    = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="llama3-70b-8192",
+        model="llama-3.3-70b-versatile",
         max_tokens=600,
         temperature=0.2,
         timeout=25.0,
@@ -512,7 +512,7 @@ async def get_jobs(q: str = "Software Engineer", location: str = "India", user_i
                         f"Job: {job['title']} — {job['description'][:150]}\n"
                         f'{{"match_score":75,"matched_skills":["Python"],"missing_skills":["Docker"],"recommendation":"Good match"}}'
                     ),
-                    model="llama3-8b-8192",
+                    model="llama-3.1-8b-instant",
                     max_tokens=150,
                     temperature=0.1,
                     timeout=8.0,
@@ -577,7 +577,7 @@ async def rewrite_resume(request: dict):
     rewritten = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="llama3-70b-8192",
+        model="llama-3.3-70b-versatile",
         max_tokens=2000,
         temperature=0.2,
         timeout=35.0,
@@ -765,7 +765,7 @@ async def interview_question(request: dict):
     question = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="llama3-70b-8192",  # smarter model for better questions
+        model="llama-3.3-70b-versatile",  # smarter model for better questions
         max_tokens=150,
         temperature=0.8,
         timeout=10.0,
@@ -826,7 +826,7 @@ async def score_answer(request: dict):
     raw    = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="llama3-70b-8192",
+        model="llama-3.3-70b-versatile",
         max_tokens=300,
         temperature=0.3,
         timeout=12.0,
@@ -875,7 +875,7 @@ async def followup(request: dict):
     result = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="llama3-8b-8192",
+        model="llama-3.1-8b-instant",
         max_tokens=100,
         temperature=0.7,
         timeout=8.0,
@@ -934,7 +934,7 @@ async def interview_report(request: dict):
     raw    = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="llama3-70b-8192",
+        model="llama-3.3-70b-versatile",
         max_tokens=500,
         temperature=0.4,
         timeout=15.0,
@@ -1000,7 +1000,7 @@ async def coach_respond(request: dict):
                 loop.run_in_executor(
                     None,
                     lambda: client.chat.completions.create(
-                        model="llama3-8b-8192",
+                        model="llama-3.1-8b-instant",
                         messages=groq_messages,
                         max_tokens=200,
                         temperature=0.85,
@@ -1029,7 +1029,7 @@ async def coach_respond(request: dict):
         reply = await call_groq_async(
             prompt=groq_prompt,
             system="You are Aria, a warm English coach.",
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             max_tokens=200,
             temperature=0.85,
             timeout=10.0
@@ -1129,7 +1129,7 @@ async def coach_feedback(request: dict):
     raw    = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="llama3-70b-8192",
+        model="llama-3.3-70b-versatile",
         max_tokens=500,
         temperature=0.3,
         timeout=15.0,
