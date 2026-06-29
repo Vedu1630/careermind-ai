@@ -352,7 +352,7 @@ async def diagnose():
         results["groq_coach"] = "❌ GROQ_API_KEY missing"
 
     # Static checks
-    results["chromadb"] = "✅ OK"
+    results["chromadb"] = "✅ OK" if CHROMA_OK else "⚠️ NOT INSTALLED"
     results["uploads_dir"] = "✅ OK" if os.path.exists("data/uploads") else "⚠️ NOT CREATED"
     results["skills_kb"] = "✅ OK"
 
@@ -424,7 +424,37 @@ async def analyze_resume(request: dict):
 
     raw    = await call_groq_async(
         prompt=prompt,
-  @app.get("/jobs")
+        system=system,
+        model="llama3-70b-8192",
+        max_tokens=600,
+        temperature=0.2,
+        timeout=25.0,
+    )
+    result = parse_json(raw, {
+        "skills_found":      [],
+        "skill_gaps":        [],
+        "experience_level":  "junior",
+        "overall_score":     55,
+        "ats_score":         real_ats_score,
+        "sections_detected": [],
+        "suggestions":       ["Analysis failed — check GROQ_API_KEY in Render"],
+        "summary":           "Holistic assessment unavailable.",
+    })
+
+    result["ats_score"] = real_ats_score
+    result["ats_breakdown"] = ats_data["score_breakdown"]
+    result["found_keywords"] = ats_data["found_keywords"]
+    result["missing_keywords"] = ats_data["missing_keywords"]
+    result["missing_sections"] = ats_data["missing_sections"]
+    result["feedback"] = ats_data["feedback"]
+    result["grade"] = ats_data["grade"]
+    result["resume_text"] = text
+
+    _cache[f"analysis:{user_id}"] = result
+    _cache[f"text:{path}"]        = text
+    return result
+
+@app.get("/jobs")
 @app.get("/api/jobs")
 async def get_jobs(q: str = "Software Engineer", location: str = "India", user_id: str = "anon"):
     import httpx
