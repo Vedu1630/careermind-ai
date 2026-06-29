@@ -384,195 +384,53 @@ async def analyze_resume(request: dict):
     if not path or not os.path.exists(path):
         raise HTTPException(404, f"Resume not found: {path}")
 
-    text = extract_pdf_text(path)
-    if not text or len(text) < 20:
-        raise HTTPException(422, "Cannot extract text. Ensure PDF is not a scanned image.")
-
-    # Calculate deterministic base score as ground truth for Gemini
-    from utils.ats_scorer import calculate_real_ats_score
-    ats_data = calculate_real_ats_score(text, job_desc)
-    real_ats_score = ats_data["ats_score"]
-
-    # Truncate to fit context window (keep first 3000 chars = full resume)
-    text_truncated = text[:3000]
-
-    system = (
-        "You are an expert resume analyst and strict Applicant Tracking System (ATS) scorer. "
-        "You calculate a real, fresh ATS score every single time from the actual resume content. "
-        "You return ONLY valid JSON — no markdown, no backticks, no explanation."
-    )
-
-    prompt = f"""You are a strict and accurate ATS (Applicant Tracking System) scorer. 
-Your job is to analyze the resume provided and return a REAL, 
-calculated ATS score — not a generic or placeholder score.
-
-CRITICAL RULES:
-- Every resume MUST produce a DIFFERENT score based on its actual content
-- NEVER return a hardcoded, default, or repeated score like 75 or 80
-- The score must be calculated fresh every single time from the actual 
-  resume text provided
-- If two resumes are different, their scores MUST be different
-
-OUR DETERMINISTIC PARSER EXTRACTED THE FOLLOWING GROUND TRUTH DATA:
-- Keyword Score: {ats_data['score_breakdown']['keywords']}/40 (Keywords found: {ats_data['found_keywords']}, Missing: {ats_data['missing_keywords'][:15]})
-- Required Sections Score: {ats_data['score_breakdown']['sections']}/25 (Missing: {ats_data['missing_sections']})
-- Quantification/Metrics Score: {ats_data['score_breakdown']['quantification']}/20 (Quantified statements found: {ats_data['quantified_achievements_count']})
-- Formatting Score: {ats_data['score_breakdown']['format']}/15 (Formatting issues: {ats_data['feedback']})
-
-CRITICAL GRADING RULES:
-1. You MUST base your category score calculations on the above factual parser data.
-2. If the quantification statements count is 0, you MUST score "experience_quality" as 0 (out of 20).
-3. If there are formatting issues, missing email, or missing phone, you MUST penalize the "formatting" score heavily.
-4. Calculate the final `ats_score` strictly using the sum of the categories (out of 100). The final score should be extremely close to the base score of {real_ats_score} unless you find additional visual/reading flow issues. Do NOT artificially inflate the score. Be a harsh grader like a top tier company recruiter.
-
-HOW TO CALCULATE THE SCORE (out of 100):
-
-1. KEYWORD DENSITY (30 points)
-   - Extract all skills, tools, technologies, job titles from the resume
-   - Count how many relevant industry keywords are present
-   - More relevant keywords = higher points (0–30)
-
-2. FORMATTING & PARSABILITY (20 points)
-   - Does it use standard section headers? (Experience, Education, Skills)
-   - Is it free of tables, columns, graphics, text boxes?
-   - Is contact info clearly visible?
-   - Deduct points for each formatting issue found
-
-3. WORK EXPERIENCE QUALITY (20 points)
-   - Are achievements quantified? (e.g., "increased sales by 30%")
-   - Are strong action verbs used?
-   - Is experience relevant and clearly described?
-   - Vague bullet points = lower score (0 if no numbers/metrics found)
-
-4. COMPLETENESS OF SECTIONS (15 points)
-   - Has: Contact Info, Summary, Experience, Education, Skills?
-   - Each missing section = deduct 3 points
-
-5. EDUCATION & CERTIFICATIONS (10 points)
-   - Relevant degree or certifications present?
-   - Score based on relevance and completeness
-
-6. LENGTH & READABILITY (5 points)
-   - 1–2 pages = full points
-   - Too short (<half page) or too long (>3 pages) = deduct points
-
-CALCULATION:
-- Add up the actual points earned in each category
-- Final score = sum of all category scores
-- Round to nearest whole number
-
-OUTPUT FORMAT (return this exact JSON):
-{{
-  "ats_score": <calculated number between 0 and 100>,
-  "breakdown": {{
-    "keyword_density": <0-30>,
-    "formatting": <0-20>,
-    "experience_quality": <0-20>,
-    "section_completeness": <0-15>,
-    "education_certifications": <0-10>,
-    "length_readability": <0-5>
-  }},
-  "keyword_gaps": ["list of important missing keywords"],
-  "formatting_issues": ["list of specific formatting problems found"],
-  "strengths": ["list of what this resume does well"],
-  "suggestions": ["list of specific actionable improvements"],
-  "experience_level": "junior | mid | senior",
-  "skills_found": ["list of skills found"],
-  "sections_detected": ["list of sections detected"]
-}}
-
-Target job description context (if any): {job_desc[:300] or 'General Industry Standard'}
-
-RESUME TO ANALYZE:
-{text_truncated}"""
-
-    # Call Gemini 1.5 Flash using the user's specific Google API Key from environment
-    gemini_key = os.getenv("GOOGLE_API_KEY", "").strip()
-    raw = ""
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: model.generate_content(
-                f"System Instructions: {system}\n\nUser Prompt: {prompt}"
-            )
-        )
-        raw = response.text or ""
-    except Exception as e:
-        print(f"⚠️ Gemini API key call failed: {e} — falling back to Groq")
-        raw = await call_groq_async(
-            prompt=prompt,
-            system=system,
-            model="llama-3.3-70b-versatile",
-            max_tokens=800,
-            temperature=0.2,
-            timeout=25.0,
-        )
-
-    parsed = parse_json(raw, {
-        "ats_score": 60,
-        "breakdown": {
-            "keyword_density": 18,
-            "formatting": 14,
-            "experience_quality": 12,
-            "section_completeness": 9,
-            "education_certifications": 5,
-            "length_readability": 2
-        },
-        "keyword_gaps": [],
-        "formatting_issues": [],
-        "strengths": [],
-        "suggestions": ["Analysis failed to parse — verify API keys"],
-        "experience_level": "junior",
-        "skills_found": [],
-        "sections_detected": ["Education", "Experience", "Skills"]
-    })
-
-    # Map the Gemini outputs to React UI keys
-    ats_val = parsed.get("ats_score", 60)
-    user_breakdown = parsed.get("breakdown", {})
+    # Call the new resume_analyzer agent we just wrote!
+    from agents.resume_analyzer import analyze_resume as run_analyze_resume
     
-    # Standard grade bands
-    if ats_val >= 85:
-        grade = "A"
-    elif ats_val >= 70:
-        grade = "B"
-    elif ats_val >= 50:
-        grade = "C"
-    else:
-        grade = "D"
-
-    # Map categories to match 40, 25, 20, 15 scale expected by frontend UI
+    # Run the analyzer agent
+    agent_result = await run_analyze_resume(
+        file_path=path,
+        user_id=user_id,
+        job_description=job_desc
+    )
+    
+    # Map the custom agent outputs to React UI keys
+    ats_val = agent_result.get("ats_score", 60)
+    agent_breakdown = agent_result.get("score_breakdown", {})
+    
+    sections_score = agent_breakdown.get("sections", {}).get("score", 12)
+    keywords_score = agent_breakdown.get("keywords", {}).get("score", 15)
+    quant_score = agent_breakdown.get("quantification", {}).get("score", 10)
+    format_score = agent_breakdown.get("formatting", {}).get("score", 10)
+    
     mapped_breakdown = {
-        "keywords":       round((user_breakdown.get("keyword_density", 18) / 30.0) * 40.0),
-        "sections":       round((user_breakdown.get("section_completeness", 10) / 15.0) * 25.0),
-        "quantification": round(user_breakdown.get("experience_quality", 12)),
-        "format":         round((user_breakdown.get("formatting", 12) / 20.0) * 15.0)
+        "keywords":       round(keywords_score * (40 / 25.0)),
+        "sections":       round(sections_score * (25 / 20.0)),
+        "quantification": round(quant_score * (20 / 15.0)),
+        "format":         round(format_score * (15 / 15.0))
     }
-
+    
+    grade = agent_result.get("grade", "Good")
+    
     result = {
         "overall_score":     ats_val,
         "overall_grade":     grade,
         "ats_score":         ats_val,
         "ats_breakdown":     mapped_breakdown,
-        "experience_level":  parsed.get("experience_level") or "junior",
-        "skills_found":      parsed.get("skills_found") or [],
-        "skill_gaps":        parsed.get("keyword_gaps") or [],
-        "missing_keywords":  parsed.get("keyword_gaps") or [],
-        "missing_sections":  list(set(["Contact Info", "Summary", "Experience", "Education", "Skills"]) - set(parsed.get("sections_detected", []))),
-        "sections_detected": parsed.get("sections_detected") or ["Education", "Experience", "Skills"],
-        "suggestions":       parsed.get("suggestions") or [],
-        "feedback":          (parsed.get("formatting_issues") or []) + (parsed.get("suggestions") or []),
+        "experience_level":  agent_result.get("experience_level") or "junior",
+        "skills_found":      agent_result.get("skills_found") or [],
+        "skill_gaps":        agent_result.get("skill_gaps") or [],
+        "missing_keywords":  agent_result.get("missing_keywords") or [],
+        "missing_sections":  agent_result.get("missing_sections") or [],
+        "sections_detected": agent_result.get("sections_detected") or ["Education", "Experience", "Skills"],
+        "suggestions":       agent_result.get("suggestions") or [],
+        "feedback":          agent_result.get("feedback") or [],
         "grade":             grade,
-        "resume_text":       text
+        "resume_text":       agent_result.get("resume_text", "")
     }
 
     _cache[f"analysis:{user_id}"] = result
-    _cache[f"text:{path}"]        = text
+    _cache[f"text:{path}"]        = result["resume_text"]
     return result
 
 @app.get("/jobs")
