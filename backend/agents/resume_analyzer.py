@@ -4,8 +4,7 @@ import re
 import hashlib
 import logging
 import PyPDF2
-from langchain.prompts import ChatPromptTemplate
-from core.singletons import get_llm, get_skills_retriever, get_cache
+from core.singletons import get_skills_retriever, get_cache
 import os
 import asyncio
 

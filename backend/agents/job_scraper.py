@@ -4,7 +4,6 @@ import json
 import re
 import hashlib
 from typing import Optional, Callable
-from langchain.prompts import ChatPromptTemplate
 from core.singletons import get_llm, get_http_client, get_cache
 import os
 

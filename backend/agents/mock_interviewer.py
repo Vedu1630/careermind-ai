@@ -5,7 +5,6 @@ import io
 import tempfile
 import os
 from typing import Optional, List, Dict
-from langchain.prompts import ChatPromptTemplate
 from core.singletons import get_llm, get_whisper
 from gtts import gTTS
 
