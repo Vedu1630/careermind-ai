@@ -388,39 +388,86 @@ async def analyze_resume(request: dict):
     if not text or len(text) < 20:
         raise HTTPException(422, "Cannot extract text. Ensure PDF is not a scanned image.")
 
-    # Calculate real ATS score deterministically
-    from utils.ats_scorer import calculate_real_ats_score
-    ats_data = calculate_real_ats_score(text, job_desc)
-    real_ats_score = ats_data["ats_score"]
-
-    # Truncate to fit Groq context window (keep first 3000 chars = full resume)
+    # Truncate to fit context window (keep first 3000 chars = full resume)
     text_truncated = text[:3000]
 
     system = (
-        "You are an expert resume analyst and career coach. "
+        "You are an expert resume analyst and strict Applicant Tracking System (ATS) scorer. "
+        "You calculate a real, fresh ATS score every single time from the actual resume content. "
         "You return ONLY valid JSON — no markdown, no backticks, no explanation."
     )
 
-    prompt = (
-        f"Analyze this resume and return ONLY valid JSON. A deterministic ATS scanner has already scored this resume.\n"
-        f"Your job is to provide QUALITATIVE feedback only — do NOT invent or change the ATS score.\n\n"
-        f"DETERMINISTIC ATS SCORE (use this exactly): {real_ats_score}/100\n"
-        f"Score breakdown: {ats_data['score_breakdown']}\n"
-        f"Missing keywords: {ats_data['missing_keywords'][:10]}\n"
-        f"Missing sections: {ats_data['missing_sections']}\n"
-        f"Issues found: {ats_data['feedback']}\n\n"
-        f"Resume:\n{text_truncated}\n\n"
-        f"Job description (optional): {job_desc[:300] or 'not provided'}\n\n"
-        f"Return exactly this JSON structure:\n"
-        f'{{"skills_found":["Python","React","FastAPI"],'
-        f'"skill_gaps":["Docker","Kubernetes","MLOps"],'
-        f'"experience_level":"junior",'
-        f'"overall_score":72,'
-        f'"ats_score":{real_ats_score},'
-        f'"sections_detected":["Education","Experience","Projects","Skills"],'
-        f'"suggestions":["Add quantified metrics","Include GitHub link"],'
-        f'"summary":"2-sentence honest assessment"}}'
-    )
+    prompt = f"""You are a strict and accurate ATS (Applicant Tracking System) scorer. 
+Your job is to analyze the resume provided and return a REAL, 
+calculated ATS score — not a generic or placeholder score.
+
+CRITICAL RULES:
+- Every resume MUST produce a DIFFERENT score based on its actual content
+- NEVER return a hardcoded, default, or repeated score like 75 or 80
+- The score must be calculated fresh every single time from the actual 
+  resume text provided
+- If two resumes are different, their scores MUST be different
+
+HOW TO CALCULATE THE SCORE (out of 100):
+
+1. KEYWORD DENSITY (30 points)
+   - Extract all skills, tools, technologies, job titles from the resume
+   - Count how many relevant industry keywords are present
+   - More relevant keywords = higher points (0–30)
+
+2. FORMATTING & PARSABILITY (20 points)
+   - Does it use standard section headers? (Experience, Education, Skills)
+   - Is it free of tables, columns, graphics, text boxes?
+   - Is contact info clearly visible?
+   - Deduct points for each formatting issue found
+
+3. WORK EXPERIENCE QUALITY (20 points)
+   - Are achievements quantified? (e.g., "increased sales by 30%")
+   - Are strong action verbs used?
+   - Is experience relevant and clearly described?
+   - Vague bullet points = lower score
+
+4. COMPLETENESS OF SECTIONS (15 points)
+   - Has: Contact Info, Summary, Experience, Education, Skills?
+   - Each missing section = deduct 3 points
+
+5. EDUCATION & CERTIFICATIONS (10 points)
+   - Relevant degree or certifications present?
+   - Score based on relevance and completeness
+
+6. LENGTH & READABILITY (5 points)
+   - 1–2 pages = full points
+   - Too short (<half page) or too long (>3 pages) = deduct points
+
+CALCULATION:
+- Add up the actual points earned in each category
+- Final score = sum of all category scores
+- Round to nearest whole number
+
+OUTPUT FORMAT (return this exact JSON):
+{{
+  "ats_score": <calculated number between 0 and 100>,
+  "breakdown": {{
+    "keyword_density": <0-30>,
+    "formatting": <0-20>,
+    "experience_quality": <0-20>,
+    "section_completeness": <0-15>,
+    "education_certifications": <0-10>,
+    "length_readability": <0-5>
+  }},
+  "keyword_gaps": ["list of important missing keywords"],
+  "formatting_issues": ["list of specific formatting problems found"],
+  "strengths": ["list of what this resume does well"],
+  "suggestions": ["list of specific actionable improvements"],
+  "experience_level": "junior | mid | senior",
+  "skills_found": ["list of skills found"],
+  "sections_detected": ["list of sections detected"]
+}}
+
+Target job description context (if any): {job_desc[:300] or 'General Industry Standard'}
+
+RESUME TO ANALYZE:
+{text_truncated}"""
 
     # Call Gemini 1.5 Flash using the user's specific Google API Key from environment
     gemini_key = os.getenv("GOOGLE_API_KEY", "").strip()
@@ -444,30 +491,68 @@ async def analyze_resume(request: dict):
             prompt=prompt,
             system=system,
             model="llama-3.3-70b-versatile",
-            max_tokens=600,
+            max_tokens=800,
             temperature=0.2,
             timeout=25.0,
         )
 
-    result = parse_json(raw, {
-        "skills_found":      [],
-        "skill_gaps":        [],
-        "experience_level":  "junior",
-        "overall_score":     55,
-        "ats_score":         real_ats_score,
-        "sections_detected": [],
-        "suggestions":       ["Analysis failed — check GROQ_API_KEY in Render"],
-        "summary":           "Holistic assessment unavailable.",
+    parsed = parse_json(raw, {
+        "ats_score": 60,
+        "breakdown": {
+            "keyword_density": 18,
+            "formatting": 14,
+            "experience_quality": 12,
+            "section_completeness": 9,
+            "education_certifications": 5,
+            "length_readability": 2
+        },
+        "keyword_gaps": [],
+        "formatting_issues": [],
+        "strengths": [],
+        "suggestions": ["Analysis failed to parse — verify API keys"],
+        "experience_level": "junior",
+        "skills_found": [],
+        "sections_detected": ["Education", "Experience", "Skills"]
     })
 
-    result["ats_score"] = real_ats_score
-    result["ats_breakdown"] = ats_data["score_breakdown"]
-    result["found_keywords"] = ats_data["found_keywords"]
-    result["missing_keywords"] = ats_data["missing_keywords"]
-    result["missing_sections"] = ats_data["missing_sections"]
-    result["feedback"] = ats_data["feedback"]
-    result["grade"] = ats_data["grade"]
-    result["resume_text"] = text
+    # Map the Gemini outputs to React UI keys
+    ats_val = parsed.get("ats_score", 60)
+    user_breakdown = parsed.get("breakdown", {})
+    
+    # Standard grade bands
+    if ats_val >= 85:
+        grade = "A"
+    elif ats_val >= 70:
+        grade = "B"
+    elif ats_val >= 50:
+        grade = "C"
+    else:
+        grade = "D"
+
+    # Map categories to match 40, 25, 20, 15 scale expected by frontend UI
+    mapped_breakdown = {
+        "keywords":       round((user_breakdown.get("keyword_density", 18) / 30.0) * 40.0),
+        "sections":       round((user_breakdown.get("section_completeness", 10) / 15.0) * 25.0),
+        "quantification": round(user_breakdown.get("experience_quality", 12)),
+        "format":         round((user_breakdown.get("formatting", 12) / 20.0) * 15.0)
+    }
+
+    result = {
+        "overall_score":     ats_val,
+        "overall_grade":     grade,
+        "ats_score":         ats_val,
+        "ats_breakdown":     mapped_breakdown,
+        "experience_level":  parsed.get("experience_level") or "junior",
+        "skills_found":      parsed.get("skills_found") or [],
+        "skill_gaps":        parsed.get("keyword_gaps") or [],
+        "missing_keywords":  parsed.get("keyword_gaps") or [],
+        "missing_sections":  list(set(["Contact Info", "Summary", "Experience", "Education", "Skills"]) - set(parsed.get("sections_detected", []))),
+        "sections_detected": parsed.get("sections_detected") or ["Education", "Experience", "Skills"],
+        "suggestions":       parsed.get("suggestions") or [],
+        "feedback":          (parsed.get("formatting_issues") or []) + (parsed.get("suggestions") or []),
+        "grade":             grade,
+        "resume_text":       text
+    }
 
     _cache[f"analysis:{user_id}"] = result
     _cache[f"text:{path}"]        = text
