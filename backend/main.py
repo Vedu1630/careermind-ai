@@ -422,14 +422,33 @@ async def analyze_resume(request: dict):
         f'"summary":"2-sentence honest assessment"}}'
     )
 
-    raw    = await call_groq_async(
-        prompt=prompt,
-        system=system,
-        model="llama-3.3-70b-versatile",
-        max_tokens=600,
-        temperature=0.2,
-        timeout=25.0,
-    )
+    # Call Gemini 1.5 Flash using the user's specific Google API Key from environment
+    gemini_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    raw = ""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: model.generate_content(
+                f"System Instructions: {system}\n\nUser Prompt: {prompt}"
+            )
+        )
+        raw = response.text or ""
+    except Exception as e:
+        print(f"⚠️ Gemini API key call failed: {e} — falling back to Groq")
+        raw = await call_groq_async(
+            prompt=prompt,
+            system=system,
+            model="llama-3.3-70b-versatile",
+            max_tokens=600,
+            temperature=0.2,
+            timeout=25.0,
+        )
+
     result = parse_json(raw, {
         "skills_found":      [],
         "skill_gaps":        [],
