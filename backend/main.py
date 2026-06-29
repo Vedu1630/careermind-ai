@@ -396,12 +396,21 @@ async def analyze_resume(request: dict):
     
     # Map the custom agent outputs to React UI keys
     ats_val = agent_result.get("ats_score", 60)
-    agent_breakdown = agent_result.get("score_breakdown", {})
     
-    sections_score = agent_breakdown.get("sections", {}).get("score", 12)
-    keywords_score = agent_breakdown.get("keywords", {}).get("score", 15)
-    quant_score = agent_breakdown.get("quantification", {}).get("score", 10)
-    format_score = agent_breakdown.get("formatting", {}).get("score", 10)
+    # Check both ats_breakdown and score_breakdown
+    agent_breakdown = agent_result.get("ats_breakdown") or agent_result.get("score_breakdown") or {}
+    
+    # Helper to extract score safely from either {"score": X} or raw number X
+    def get_score_val(bd, key, default):
+        val = bd.get(key, default)
+        if isinstance(val, dict):
+            return val.get("score", default)
+        return val if isinstance(val, (int, float)) else default
+
+    sections_score = get_score_val(agent_breakdown, "sections", 12)
+    keywords_score = get_score_val(agent_breakdown, "keywords", 15)
+    quant_score = get_score_val(agent_breakdown, "quantification", 10)
+    format_score = get_score_val(agent_breakdown, "formatting", 10)
     
     mapped_breakdown = {
         "keywords":       round(keywords_score * (40 / 25.0)),
