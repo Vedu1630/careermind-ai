@@ -342,7 +342,9 @@ export default function ResumeUpload() {
                   ].map(({ label, value, grade, color, trackColor }) => {
                     const radius = 54;
                     const circumference = 2 * Math.PI * radius;
-                    const dash = value ? (value / 100) * circumference : 0;
+                    const parsedVal = typeof value === 'number' ? value : parseFloat(value);
+                    const safeVal = isNaN(parsedVal) ? 0 : parsedVal;
+                    const dash = (safeVal / 100) * circumference;
 
                     return (
                       <motion.div
@@ -424,19 +426,19 @@ export default function ResumeUpload() {
                       Score Breakdown
                     </div>
                     <div className="space-y-2">
-                      {Object.values(analysisData.overall_breakdown).map((item) => (
-                        <div key={item.label} className="flex items-center gap-3">
-                          <span className="text-xs text-[#555] w-36 shrink-0">{item.label}</span>
+                      {Object.values(analysisData.overall_breakdown || {}).map((item) => (
+                        <div key={item?.label || 'Score'} className="flex items-center gap-3">
+                          <span className="text-xs text-[#555] w-36 shrink-0">{item?.label || 'Section'}</span>
                           <div className="flex-1 h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
                             <motion.div
                               initial={{ width: 0 }}
-                              animate={{ width: `${(item.score / item.max) * 100}%` }}
+                              animate={{ width: `${(((item?.score || 0) / (item?.max || 1)) * 100)}%` }}
                               transition={{ duration: 0.8, ease: "easeOut" }}
                               className="h-full rounded-full bg-[#6B5CE7]"
                             />
                           </div>
                           <span className="text-xs font-mono text-[#555] w-10 text-right">
-                            {item.score}/{item.max}
+                            {item?.score ?? 0}/{item?.max ?? 100}
                           </span>
                         </div>
                       ))}
@@ -456,20 +458,20 @@ export default function ResumeUpload() {
                     </div>
                     <div className="space-y-3">
                       {[
-                        { label: "Keyword Match", score: analysisData.ats_breakdown.keywords, max: 40, color: "bg-[#8B7CF8]" },
-                        { label: "Required Sections", score: analysisData.ats_breakdown.sections, max: 25, color: "bg-[#6B5CE7]" },
-                        { label: "Quantified Achievements", score: analysisData.ats_breakdown.quantification, max: 20, color: "bg-[#22C55E]" },
-                        { label: "Format Quality", score: analysisData.ats_breakdown.format, max: 15, color: "bg-orange-400" },
+                        { label: "Keyword Match", score: analysisData.ats_breakdown?.keywords ?? 0, max: 40, color: "bg-[#8B7CF8]" },
+                        { label: "Required Sections", score: analysisData.ats_breakdown?.sections ?? 0, max: 25, color: "bg-[#6B5CE7]" },
+                        { label: "Quantified Achievements", score: analysisData.ats_breakdown?.quantification ?? 0, max: 20, color: "bg-[#22C55E]" },
+                        { label: "Format Quality", score: analysisData.ats_breakdown?.format ?? 0, max: 15, color: "bg-orange-400" },
                       ].map(({ label, score, max, color }) => (
                         <div key={label}>
                           <div className="flex justify-between text-xs mb-1">
                             <span className="text-[#555]">{label}</span>
-                            <span className="font-semibold text-[#111]">{score}/{max}</span>
+                            <span className="font-semibold text-[#111]">{score ?? 0}/{max ?? 100}</span>
                           </div>
                           <div className="h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
                             <motion.div
                               initial={{ width: 0 }}
-                              animate={{ width: `${(score / max) * 100}%` }}
+                              animate={{ width: `${(((score || 0) / (max || 1)) * 100)}%` }}
                               transition={{ duration: 0.8, ease: "easeOut" }}
                               className={`h-full rounded-full ${color}`}
                             />
@@ -482,10 +484,10 @@ export default function ResumeUpload() {
                     {analysisData.missing_keywords?.length > 0 && (
                       <div className="mt-4 border-t border-[#F0EEFF] pt-3">
                         <p className="text-xs font-semibold text-red-500 mb-2 flex items-center gap-1">
-                          ⚠️ Missing Keywords ({analysisData.missing_keywords.length})
+                          ⚠️ Missing Keywords ({analysisData.missing_keywords?.length ?? 0})
                         </p>
                         <div className="flex flex-wrap gap-1">
-                          {analysisData.missing_keywords.slice(0, 12).map(kw => (
+                          {analysisData.missing_keywords?.slice(0, 12).map(kw => (
                             <span key={kw} className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-100">
                               {kw}
                             </span>
@@ -497,7 +499,7 @@ export default function ResumeUpload() {
                     {/* ATS feedback */}
                     {analysisData.feedback?.length > 0 && (
                       <div className="mt-3 border-t border-[#F0EEFF] pt-2 space-y-1">
-                        {analysisData.feedback.map((f, i) => (
+                        {analysisData.feedback?.map((f, i) => (
                           <p key={i} className="text-[11px] text-[#555]">• {f}</p>
                         ))}
                       </div>
@@ -512,10 +514,10 @@ export default function ResumeUpload() {
                   <div className="flex items-center gap-2 mb-4">
                     <Target size={16} className="text-[#22C55E]" />
                     <h3 className="font-semibold text-[#111]">Skills Detected</h3>
-                    <span className="ml-auto inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-[#DCFCE7] text-[#16A34A]">{analysis.skills_found.length} found</span>
+                    <span className="ml-auto inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-[#DCFCE7] text-[#16A34A]">{analysis.skills_found?.length ?? 0} found</span>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {analysis.skills_found.map((skill) => (
+                    {analysis.skills_found?.map((skill) => (
                       <motion.div key={skill} initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}>
                         <SkillBadge skill={skill} variant="matched" />
                       </motion.div>
@@ -532,7 +534,7 @@ export default function ResumeUpload() {
                     <h3 className="font-semibold text-[#111]">Skill Gaps to Address</h3>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {analysis.skill_gaps.map((skill) => (
+                    {analysis.skill_gaps?.map((skill) => (
                       <SkillBadge key={skill} skill={skill} variant="gap" />
                     ))}
                   </div>
@@ -546,7 +548,7 @@ export default function ResumeUpload() {
                     <FileText size={16} className="text-[#8B7CF8]" /> Sections Detected
                   </h3>
                   <div className="flex flex-wrap gap-2">
-                    {analysis.sections_detected.map((s) => <SectionTag key={s} section={s} />)}
+                    {analysis.sections_detected?.map((s) => <SectionTag key={s} section={s} />)}
                   </div>
                 </div>
               )}
@@ -558,7 +560,7 @@ export default function ResumeUpload() {
                     <Zap size={16} className="text-[#6B5CE7]" /> AI Suggestions
                   </h3>
                   <ul className="space-y-2">
-                    {analysis.suggestions.map((s, i) => (
+                    {analysis.suggestions?.map((s, i) => (
                       <motion.li
                         key={i}
                         initial={{ opacity: 0, x: -10 }}
