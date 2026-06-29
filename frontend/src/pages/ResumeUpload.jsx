@@ -109,7 +109,7 @@ export default function ResumeUpload() {
   const { setResumePath, setResumeAnalysis, resume } = useStore()
   const [dragging, setDragging] = useState(false)
   const [file, setFile] = useState(null)
-  const [status, setStatus] = useState('idle') // idle | uploading | analyzing | done | error
+  const [status, setStatus] = useState(() => resume?.analysis ? 'done' : 'idle') // idle | uploading | analyzing | done | error
   const [progress, setProgress] = useState(0)
   const [errorMsg, setErrorMsg] = useState('')
   const fileInputRef = useRef(null)
@@ -129,7 +129,31 @@ export default function ResumeUpload() {
     }
   }, [resumeEvents.length, status])
 
-  const analysis = resume.analysis
+  // Sync status with store: if analysis exists but status is idle, show results
+  useEffect(() => {
+    if (resume?.analysis && status === 'idle') {
+      setStatus('done')
+    }
+  }, [resume?.analysis, status])
+
+  const rawAnalysis = resume?.analysis
+  // ── Normalize analysis data to prevent crashes from unexpected API shapes ──
+  const analysis = rawAnalysis ? {
+    experience_level: rawAnalysis.experience_level || 'junior',
+    overall_score: typeof rawAnalysis.overall_score === 'number' ? rawAnalysis.overall_score : (parseFloat(rawAnalysis.overall_score) || 0),
+    overall_grade: rawAnalysis.overall_grade || '',
+    ats_score: typeof rawAnalysis.ats_score === 'number' ? rawAnalysis.ats_score : (parseFloat(rawAnalysis.ats_score) || 0),
+    ats_breakdown: rawAnalysis.ats_breakdown && typeof rawAnalysis.ats_breakdown === 'object' && !Array.isArray(rawAnalysis.ats_breakdown)
+      ? rawAnalysis.ats_breakdown : null,
+    overall_breakdown: rawAnalysis.overall_breakdown && typeof rawAnalysis.overall_breakdown === 'object' && !Array.isArray(rawAnalysis.overall_breakdown)
+      ? rawAnalysis.overall_breakdown : null,
+    skills_found: Array.isArray(rawAnalysis.skills_found) ? rawAnalysis.skills_found : [],
+    skill_gaps: Array.isArray(rawAnalysis.skill_gaps) ? rawAnalysis.skill_gaps : [],
+    missing_keywords: Array.isArray(rawAnalysis.missing_keywords) ? rawAnalysis.missing_keywords : [],
+    sections_detected: Array.isArray(rawAnalysis.sections_detected) ? rawAnalysis.sections_detected : [],
+    suggestions: Array.isArray(rawAnalysis.suggestions) ? rawAnalysis.suggestions : [],
+    feedback: Array.isArray(rawAnalysis.feedback) ? rawAnalysis.feedback : [],
+  } : null
   const analysisData = analysis
 
   const processFile = useCallback(async (selectedFile) => {

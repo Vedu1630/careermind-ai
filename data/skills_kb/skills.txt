@@ -1,0 +1,1 @@
+Python JavaScript TypeScript React Next.js Node.js FastAPI Django Machine Learning Deep Learning NLP LangChain LangGraph RAG ChromaDB TensorFlow PyTorch Scikit-learn Gemini GPT Docker Kubernetes AWS GCP PostgreSQL MongoDB Redis GraphQL REST APIs Git Algorithms System Design HTML CSS Tailwind Firebase Supabase Android iOS React Native Java C++

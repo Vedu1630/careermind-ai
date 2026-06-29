@@ -11,6 +11,7 @@ import MockInterview from "./pages/MockInterview";
 import DailyCoach from "./pages/DailyCoach";
 import AgentStatus from "./pages/AgentStatus";
 import Navbar from "./components/Navbar";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { useAgentStream } from "./hooks/useAgentStream";
 import api, { BACKEND_URL, wakeUpBackend } from "./lib/api";
 import axios from "axios";
@@ -117,20 +118,22 @@ function AppContent() {
       {!isAuth && <Navbar />}
       <div className={!isAuth ? "flex" : ""}>
         <main className={!isAuth ? "flex-1 min-w-0" : ""}>
-          <AnimatePresence mode="wait">
-            <Routes location={location} key={location.pathname}>
-              <Route path="/auth"        element={<AuthRoute />} />
-              <Route path="/"            element={<Protected><Dashboard /></Protected>} />
-              <Route path="/dashboard"   element={<Protected><Dashboard /></Protected>} />
-              <Route path="/upload"      element={<Protected><ResumeUpload /></Protected>} />
-              <Route path="/jobs"        element={<Protected><JobMatches /></Protected>} />
-              <Route path="/rewrite"     element={<Protected><ResumeRewriter /></Protected>} />
-              <Route path="/interview"   element={<Protected><MockInterview /></Protected>} />
-              <Route path="/daily-coach" element={<Protected><DailyCoach /></Protected>} />
-              <Route path="/status"      element={<Protected><AgentStatus /></Protected>} />
-              <Route path="*"            element={<Navigate to="/dashboard" replace />} />
-            </Routes>
-          </AnimatePresence>
+          <ErrorBoundary>
+            <AnimatePresence mode="wait">
+              <Routes location={location} key={location.pathname}>
+                <Route path="/auth"        element={<AuthRoute />} />
+                <Route path="/"            element={<Protected><ErrorBoundary><Dashboard /></ErrorBoundary></Protected>} />
+                <Route path="/dashboard"   element={<Protected><ErrorBoundary><Dashboard /></ErrorBoundary></Protected>} />
+                <Route path="/upload"      element={<Protected><ErrorBoundary><ResumeUpload /></ErrorBoundary></Protected>} />
+                <Route path="/jobs"        element={<Protected><ErrorBoundary><JobMatches /></ErrorBoundary></Protected>} />
+                <Route path="/rewrite"     element={<Protected><ErrorBoundary><ResumeRewriter /></ErrorBoundary></Protected>} />
+                <Route path="/interview"   element={<Protected><ErrorBoundary><MockInterview /></ErrorBoundary></Protected>} />
+                <Route path="/daily-coach" element={<Protected><ErrorBoundary><DailyCoach /></ErrorBoundary></Protected>} />
+                <Route path="/status"      element={<Protected><ErrorBoundary><AgentStatus /></ErrorBoundary></Protected>} />
+                <Route path="*"            element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+            </AnimatePresence>
+          </ErrorBoundary>
         </main>
       </div>
     </div>
