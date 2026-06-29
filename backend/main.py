@@ -407,16 +407,16 @@ async def analyze_resume(request: dict):
             return val.get("score", default)
         return val if isinstance(val, (int, float)) else default
 
-    sections_score = get_score_val(agent_breakdown, "sections", 12)
-    keywords_score = get_score_val(agent_breakdown, "keywords", 15)
-    quant_score = get_score_val(agent_breakdown, "quantification", 10)
-    format_score = get_score_val(agent_breakdown, "formatting", 10)
+    sections_score = get_score_val(agent_breakdown, "sections", 25)
+    keywords_score = get_score_val(agent_breakdown, "keywords", 40)
+    quant_score = get_score_val(agent_breakdown, "quantification", 20)
+    format_score = get_score_val(agent_breakdown, "format", 15)
     
     mapped_breakdown = {
-        "keywords":       round(keywords_score * (40 / 25.0)),
-        "sections":       round(sections_score * (25 / 20.0)),
-        "quantification": round(quant_score * (20 / 15.0)),
-        "format":         round(format_score * (15 / 15.0))
+        "keywords":       keywords_score,
+        "sections":       sections_score,
+        "quantification": quant_score,
+        "format":         format_score
     }
     
     grade = agent_result.get("grade", "Good")
