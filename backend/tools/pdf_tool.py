@@ -344,27 +344,25 @@ class PDFResumeHandler:
                             "origin_y":  origin[1] if isinstance(origin, (list, tuple)) else bbox.y1,
                         })
 
-            # Apply all replacements
+            # Apply all redactions first to physically remove original text from the PDF layer
             for rep in replacements:
                 bbox = rep["bbox"]
-
-                # Step 1: Sample background color at this location
                 bg = self.sample_background(page, bbox)
-
-                # Step 2: Erase original text
-                # Expand erase area slightly to ensure full coverage
+                
+                # Expand slightly to ensure total removal
                 erase_rect = fitz.Rect(
-                    bbox.x0 - 0.3,
-                    bbox.y0 - 0.5,
-                    bbox.x1 + 1.0,
-                    bbox.y1 + 0.5,
+                    bbox.x0 - 0.5,
+                    bbox.y0 - 0.8,
+                    bbox.x1 + 1.2,
+                    bbox.y1 + 0.8,
                 )
-                shape = page.new_shape()
-                shape.draw_rect(erase_rect)
-                shape.finish(color=bg, fill=bg, width=0)
-                shape.commit()
+                page.add_redact_annot(erase_rect, fill=bg)
+            
+            # Commit redactions (deletes original text characters permanently)
+            page.apply_redact(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-                # Step 3: Write new text at EXACT original baseline
+            # Write new text at EXACT original baseline
+            for rep in replacements:
                 try:
                     page.insert_text(
                         point=fitz.Point(rep["origin_x"], rep["origin_y"]),
