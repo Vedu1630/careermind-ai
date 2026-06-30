@@ -267,9 +267,7 @@ if FRONTEND:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ORIGINS,
-    allow_origin_regex=r"https://.*\.(vercel\.app|onrender\.com|netlify\.app)",
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
