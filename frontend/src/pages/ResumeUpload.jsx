@@ -489,56 +489,44 @@ export default function ResumeUpload() {
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
-                    className="mt-4 p-4 bg-[#FAFAFF] border border-[#E8E4FF] rounded-xl"
+                    className="mt-4 p-4 bg-white border border-[#E8E4FF] rounded-2xl"
                   >
-                    <div className="text-[11px] font-bold text-[#BBB] tracking-widest uppercase mb-3">
+                    <div className="text-xs font-bold text-[#BBB] tracking-widest mb-3 uppercase">
                       ATS Score Breakdown
                     </div>
-                    <div className="space-y-3">
-                      {[
-                        { label: "Keyword Match", score: analysisData.ats_breakdown?.keywords ?? 0, max: 40, color: "bg-[#8B7CF8]" },
-                        { label: "Required Sections", score: analysisData.ats_breakdown?.sections ?? 0, max: 25, color: "bg-[#6B5CE7]" },
-                        { label: "Quantified Achievements", score: analysisData.ats_breakdown?.quantification ?? 0, max: 20, color: "bg-[#22C55E]" },
-                        { label: "Format Quality", score: analysisData.ats_breakdown?.format ?? 0, max: 15, color: "bg-orange-400" },
-                      ].map(({ label, score, max, color }) => (
-                        <div key={label}>
-                          <div className="flex justify-between text-xs mb-1">
-                            <span className="text-[#555]">{label}</span>
-                            <span className="font-semibold text-[#111]">{score ?? 0}/{max ?? 100}</span>
-                          </div>
-                          <div className="h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
+                    <div className="space-y-2.5">
+                      {Object.values(analysisData.ats_breakdown).map((item) => (
+                        <div key={item.label} className="flex items-center gap-3">
+                          <span className="text-xs text-[#555] w-40 shrink-0">{item.label}</span>
+                          <div className="flex-1 h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
                             <motion.div
                               initial={{ width: 0 }}
-                              animate={{ width: `${(((score || 0) / (max || 1)) * 100)}%` }}
-                              transition={{ duration: 0.8, ease: "easeOut" }}
-                              className={`h-full rounded-full ${color}`}
+                              animate={{ width: `${(item.score / item.max) * 100}%` }}
+                              transition={{ duration: 0.8 }}
+                              className={`h-full rounded-full ${
+                                item.score / item.max >= 0.7 ? "bg-emerald-400" :
+                                item.score / item.max >= 0.4 ? "bg-[#6B5CE7]" : "bg-red-400"
+                              }`}
                             />
                           </div>
+                          <span className="text-xs font-mono text-[#888] w-10 text-right">
+                            {item.score}/{item.max}
+                          </span>
                         </div>
                       ))}
                     </div>
 
-                    {/* Missing keywords */}
-                    {analysisData.missing_keywords?.length > 0 && (
-                      <div className="mt-4 border-t border-[#F0EEFF] pt-3">
-                        <p className="text-xs font-semibold text-red-500 mb-2 flex items-center gap-1">
-                          ⚠️ Missing Keywords ({analysisData.missing_keywords?.length ?? 0})
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {analysisData.missing_keywords?.slice(0, 12).map(kw => (
-                            <span key={kw} className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full border border-red-100">
-                              {kw}
-                            </span>
-                          ))}
+                    {/* Top issues */}
+                    {analysisData?.top_issues?.length > 0 && (
+                      <div className="mt-4 pt-3 border-t border-[#F0EEFF]">
+                        <div className="text-xs font-bold text-red-400 mb-2">
+                          Top improvements needed:
                         </div>
-                      </div>
-                    )}
-
-                    {/* ATS feedback */}
-                    {analysisData.feedback?.length > 0 && (
-                      <div className="mt-3 border-t border-[#F0EEFF] pt-2 space-y-1">
-                        {analysisData.feedback?.map((f, i) => (
-                          <p key={i} className="text-[11px] text-[#555]">• {f}</p>
+                        {analysisData.top_issues.map((issue, i) => (
+                          <div key={i} className="flex items-start gap-2 text-xs text-[#888] mb-1">
+                            <span className="text-amber-400 shrink-0 mt-0.5">→</span>
+                            {issue.area}
+                          </div>
                         ))}
                       </div>
                     )}

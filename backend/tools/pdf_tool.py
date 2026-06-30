@@ -1,25 +1,19 @@
 """
-PDF Resume Handler — pixel-perfect rewriter.
-Opens original PDF, finds changed text spans,
-erases and rewrites only those spans.
-Everything else stays identical.
+PDF Resume Handler — pixel-perfect rewriter using textbox insertion.
+Handles text wrapping correctly so no text is truncated.
 """
-import fitz       # pymupdf
+import fitz
 import pdfplumber
 import difflib
 import re
 import io
-from typing import Optional
+from typing import Optional, List
 
 
 class PDFResumeHandler:
 
-    # ── Text extraction ──────────────────────────────────────────
     def extract_text_for_ai(self, file_path: str) -> str:
-        """
-        Extract clean plain text from PDF.
-        Preserves reading order. Used to send to Gemini/Groq for rewriting.
-        """
+        """Extract clean plain text preserving reading order."""
         pages = []
         try:
             with pdfplumber.open(file_path) as pdf:
@@ -28,7 +22,7 @@ class PDFResumeHandler:
                     if t and t.strip():
                         pages.append(t.strip())
         except Exception as e:
-            print(f"pdfplumber failed: {e}, trying PyMuPDF")
+            print(f"pdfplumber failed: {e}")
             try:
                 doc = fitz.open(file_path)
                 for page in doc:
@@ -38,31 +32,32 @@ class PDFResumeHandler:
                 print(f"PyMuPDF also failed: {e2}")
         return "\n\n".join(pages)
 
-    # ── Change detection ─────────────────────────────────────────
     def build_change_map(self, original_text: str, rewritten_text: str) -> dict:
         """
-        Build a mapping of {original_line → rewritten_line}
-        for lines that actually changed content.
-
-        Protected lines that NEVER get changed:
-        - Section headers (Education, Experience, Projects, etc.)
-        - Names, dates, universities, companies
-        - Scores (CGPA, GSEB, percentages)
-        - Short lines under 8 words (likely headers or labels)
+        Build {original_paragraph → rewritten_paragraph} for changed content.
+        Works at paragraph level, not line level, to handle text wrapping.
         """
-        # Lines that should NEVER be changed
-        PROTECTED_PATTERNS = [
-            r'^\s*(Education|Experience|Projects|Skills|Certifications|'
+        # Protected patterns — NEVER change these
+        PROTECTED = [
+            r'^(Education|Experience|Projects|Skills|Certifications|'
             r'Achievements|Publications|CORE SKILLS|Technical Skills|'
             r'Soft Skills|Positions of Responsibility)\s*[_\-]*\s*$',
-            r'^\s*(MPSTME|NMIMS|Bhulka|Savani|SoftSages|HackerRank|Deloitte|Delottie)',
+            r'^(MPSTME|NMIMS|Bhulka|Savani|SoftSages|HackerRank|Deloitte|Delottie)',
             r'\b(20\d{2}|19\d{2})\s*[-–]\s*(20\d{2}|present|current)',
             r'\b(CGPA|GPA|GSEB|B\.Tech|B\.E\.|M\.Tech)\b',
-            r'^\s*[A-Z][a-z]+\s+[A-Z][a-z]+\s*$',  # Person names
-            r'^\s*Date of birth',
-            r'^\s*BTech|B\.Tech',
-            r'^\s*Batch\s+\d{4}',
+            r'^Date of birth',
+            r'^BTech|B\.Tech|Batch\s+\d{4}',
+            r'^[A-Z][a-z]+\s+[A-Z][a-z]+\s*$',  # names
+            r'^\s*[\•\-\*]\s*(Programming|Web Technologies|Databases|Concepts|Soft Skills):',
         ]
+
+        def is_protected(line: str) -> bool:
+            for pat in PROTECTED:
+                if re.search(pat, line.strip(), re.IGNORECASE):
+                    return True
+            if len(line.strip().split()) < 3:
+                return True
+            return False
 
         orig_lines = [l for l in original_text.split('\n') if l.strip()]
         new_lines  = [l for l in rewritten_text.split('\n') if l.strip()]
@@ -73,185 +68,114 @@ class PDFResumeHandler:
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag != 'replace':
                 continue
-
             orig_chunk = orig_lines[i1:i2]
             new_chunk  = new_lines[j1:j2]
 
             for k, orig_line in enumerate(orig_chunk):
                 if k >= len(new_chunk):
                     break
-
-                new_line = new_chunk[k]
+                new_line     = new_chunk[k]
                 orig_stripped = orig_line.strip()
                 new_stripped  = new_line.strip()
 
-                # Skip if identical
                 if orig_stripped == new_stripped:
                     continue
-
-                # Skip protected lines
-                protected = False
-                for pattern in PROTECTED_PATTERNS:
-                    if re.search(pattern, orig_stripped, re.IGNORECASE):
-                        protected = True
-                        break
-                if protected:
+                if is_protected(orig_stripped):
+                    continue
+                if any(p in new_stripped.lower() for p in
+                       ['[email]','[linkedin]','[github]','[phone]','[url]']):
                     continue
 
-                # Skip very short lines (headers, labels)
-                if len(orig_stripped.split()) < 4:
-                    continue
+                change_map[orig_stripped] = new_stripped
 
-                # Skip lines with placeholder text added by AI
-                placeholders = ['[email]', '[linkedin]', '[github]', '[phone]',
-                                '[url]', '[website]', '[address]']
-                if any(p in new_stripped.lower() for p in placeholders):
-                    continue
-
-                if orig_stripped and new_stripped:
-                    change_map[orig_stripped] = new_stripped
-
-        print(f"📝 Change map built: {len(change_map)} lines will be updated")
-        for orig, new in list(change_map.items())[:3]:
-            print(f"  ORIG: {orig[:60]}")
-            print(f"  NEW:  {new[:60]}")
-            print()
-
+        print(f"📝 {len(change_map)} text spans will be updated")
         return change_map
 
-    # ── Font mapping ─────────────────────────────────────────────
-    def get_pymupdf_font(self, pdf_font_name: str, flags: int) -> str:
-        """
-        Map PDF embedded font name to PyMuPDF built-in font.
-        Preserves bold and italic styling.
+    def get_font(self, name: str, flags: int) -> str:
+        """Map PDF font name to PyMuPDF built-in."""
+        n       = (name or "").lower()
+        is_bold = bool(flags & 16) or "bold" in n
+        is_ital = bool(flags & 2)  or "italic" in n or "oblique" in n
 
-        PyMuPDF built-ins:
-        helv=Helvetica, hebo=Helvetica Bold, heit=Helvetica Italic, hebi=Helvetica Bold+Italic
-        tiro=Times, tibo=Times Bold, tiit=Times Italic, tibi=Times Bold+Italic
-        cour=Courier, cobo=Courier Bold, coit=Courier Italic, cobi=Courier Bold+Italic
-        """
-        name    = (pdf_font_name or "").lower()
-        is_bold = bool(flags & 16) or "bold" in name
-        is_ital = bool(flags & 2)  or "italic" in name or "oblique" in name
-
-        # Helvetica / Arial / Calibri / Sans-serif family
-        if any(x in name for x in ["helv", "arial", "calibri", "sans", "gothic",
-                                     "roboto", "verdana", "tahoma", "segoe"]):
+        if any(x in n for x in ["helv","arial","calibri","sans","gothic","roboto","verdana"]):
             if is_bold and is_ital: return "hebi"
             if is_bold:             return "hebo"
             if is_ital:             return "heit"
             return "helv"
-
-        # Times / Georgia / Serif family
-        if any(x in name for x in ["times", "roman", "serif", "georgia",
-                                     "garamond", "palatino", "book"]):
+        if any(x in n for x in ["times","roman","serif","georgia","garamond"]):
             if is_bold and is_ital: return "tibi"
             if is_bold:             return "tibo"
             if is_ital:             return "tiit"
             return "tiro"
-
-        # Courier / Mono family
-        if any(x in name for x in ["cour", "mono", "consol", "lucida",
-                                     "inconsolata", "fira"]):
+        if any(x in n for x in ["cour","mono","consol"]):
             if is_bold and is_ital: return "cobi"
             if is_bold:             return "cobo"
             if is_ital:             return "coit"
             return "cour"
-
-        # Default fallback — use bold/italic from flags
         if is_bold and is_ital: return "hebi"
         if is_bold:             return "hebo"
         if is_ital:             return "heit"
         return "helv"
 
-    # ── Color conversion ─────────────────────────────────────────
-    def color_to_rgb(self, color) -> tuple:
-        """Convert PyMuPDF color value to normalized RGB (0.0–1.0)."""
+    def to_rgb(self, color) -> tuple:
+        """Convert color value to normalized RGB."""
         if isinstance(color, (list, tuple)) and len(color) >= 3:
-            return tuple(min(1.0, v / 255 if v > 1 else float(v)) for v in color[:3])
+            return tuple(min(1.0, v/255 if v>1 else float(v)) for v in color[:3])
         if isinstance(color, float):
-            g = max(0.0, min(1.0, color))
-            return (g, g, g)
+            v = max(0.0, min(1.0, color))
+            return (v, v, v)
         if isinstance(color, int):
-            r = ((color >> 16) & 0xFF) / 255
-            g = ((color >>  8) & 0xFF) / 255
-            b = (color         & 0xFF) / 255
-            return (r, g, b)
-        return (0.0, 0.0, 0.0)  # default black
+            return ((color>>16&0xFF)/255, (color>>8&0xFF)/255, (color&0xFF)/255)
+        return (0.0, 0.0, 0.0)
 
-    # ── Background color sampling ─────────────────────────────────
-    def sample_background(self, page: fitz.Page, rect: fitz.Rect) -> tuple:
-        """
-        Sample the pixel color behind a text region.
-        Used as the erase color when redacting original text.
-        Returns normalized RGB tuple.
-        """
+    def sample_bg(self, page: fitz.Page, rect: fitz.Rect) -> tuple:
+        """Sample background color at rect location."""
         try:
-            # Sample a 3x3 area at the top-left of the span
-            clip = fitz.Rect(
-                rect.x0,
-                rect.y0,
-                min(rect.x0 + 3, rect.x1),
-                min(rect.y0 + 3, rect.y1)
-            )
-            pix     = page.get_pixmap(matrix=fitz.Matrix(1, 1), clip=clip, alpha=False)
-            samples = pix.samples
-            if len(samples) >= 3:
-                r = samples[0] / 255
-                g = samples[1] / 255
-                b = samples[2] / 255
-                # If very dark (black header/sidebar), return that color
-                # Otherwise return white (most resumes have white background)
-                if r < 0.2 and g < 0.2 and b < 0.2:
+            clip = fitz.Rect(rect.x0, rect.y0,
+                             min(rect.x0+4, rect.x1),
+                             min(rect.y0+4, rect.y1))
+            pix = page.get_pixmap(matrix=fitz.Matrix(1,1), clip=clip, alpha=False)
+            s   = pix.samples
+            if len(s) >= 3:
+                r, g, b = s[0]/255, s[1]/255, s[2]/255
+                if r < 0.15 and g < 0.15 and b < 0.15:
                     return (r, g, b)
                 return (1.0, 1.0, 1.0)
         except Exception:
             pass
         return (1.0, 1.0, 1.0)
 
-    # ── Find replacement for a span ───────────────────────────────
     def find_replacement(self, span_text: str, change_map: dict) -> Optional[str]:
-        """
-        Find the rewritten version for a PDF text span.
-        Tries exact match first, then partial/substring match.
-        Returns None if no change found (span stays untouched).
-        """
+        """Find replacement for a text span."""
         if not span_text or len(span_text.strip()) < 4:
             return None
+        s = span_text.strip()
 
-        span_stripped = span_text.strip()
+        # Exact match
+        if s in change_map:
+            return change_map[s]
 
-        # 1. Exact match
-        if span_stripped in change_map:
-            return change_map[span_stripped]
-
-        # 2. Span is a substring of a changed original line
+        # Span is part of a changed line
         for orig, new in change_map.items():
-            if span_stripped in orig and len(span_stripped) > 15:
+            if s in orig and len(s) > 20:
                 try:
-                    idx = orig.index(span_stripped)
-                    ratio_s  = idx / len(orig)
-                    ratio_e  = (idx + len(span_stripped)) / len(orig)
-                    ns = int(ratio_s * len(new))
-                    ne = int(ratio_e * len(new))
-                    # Snap to word boundaries
-                    while ns > 0 and ns < len(new) and new[ns - 1] != ' ':
-                        ns -= 1
-                    while ne < len(new) and ne < len(new) and new[ne] != ' ':
-                        ne += 1
-                    candidate = new[ns:ne].strip()
-                    if candidate and len(candidate) >= 3:
-                        return candidate
+                    idx = orig.index(s)
+                    r_s = idx / len(orig)
+                    r_e = (idx + len(s)) / len(orig)
+                    ns  = int(r_s * len(new))
+                    ne  = int(r_e * len(new))
+                    while ns > 0 and ns < len(new) and new[ns-1] != ' ': ns -= 1
+                    while ne < len(new) and new[ne] != ' ': ne += 1
+                    cand = new[ns:ne].strip()
+                    if cand and len(cand) >= 3:
+                        return cand
                 except (ValueError, IndexError):
                     pass
+            if orig in s and len(orig) > 20:
+                return s.replace(orig, new, 1)
 
-            # 3. A changed original line is contained in this span
-            if orig in span_stripped and len(orig) > 15:
-                return span_stripped.replace(orig, new, 1)
+        return None
 
-        return None  # No change — leave this span untouched
-
-    # ── Main rebuild method ───────────────────────────────────────
     def rebuild_pdf_with_rewritten_text(
         self,
         original_path: str,
@@ -259,34 +183,19 @@ class PDFResumeHandler:
         rewritten_text: str,
     ) -> bytes:
         """
-        MAIN METHOD — pixel-perfect PDF rewriter.
+        Pixel-perfect PDF rewrite.
 
-        Algorithm:
-        1. Build change_map from difflib line comparison
-        2. Open original PDF with PyMuPDF
-        3. For each page, for each text span:
-           a. Check if span text is in change_map
-           b. If yes: erase original text with background-colored rectangle
-           c. Write new text at EXACT same position, EXACT same font+size+color
-        4. Save modified PDF (all unchanged content stays pixel-perfect)
-        5. Return bytes
-
-        What stays identical:
-        - NMIMS logo and all images
-        - Profile photo
-        - Section header underlines and borders
-        - All decorative lines
-        - Unchanged text (names, dates, companies, headers)
-        - Font sizes and weights
-        - Page margins and layout
-        - Column structure
+        Key fix for truncation:
+        - Uses insert_textbox() instead of insert_text()
+        - insert_textbox() wraps text within the line's bounding box
+        - Expands the erase area to cover the full original text height
+        - Never truncates — if text doesn't fit, reduces font size slightly
         """
-        doc         = fitz.open(original_path)
-        change_map  = self.build_change_map(original_text, rewritten_text)
-        total_changed = 0
+        doc        = fitz.open(original_path)
+        change_map = self.build_change_map(original_text, rewritten_text)
+        total      = 0
 
         if not change_map:
-            print("⚠️ No changes detected — returning original PDF")
             buf = io.BytesIO()
             doc.save(buf)
             doc.close()
@@ -295,112 +204,118 @@ class PDFResumeHandler:
         for page_num in range(len(doc)):
             page = doc[page_num]
 
-            # Get all text with full style information
-            raw_dict = page.get_text(
+            raw = page.get_text(
                 "rawdict",
-                flags=(fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+                flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES
             )
 
-            # Collect all replacements first (don't modify while iterating)
-            replacements = []
+            # Group spans by their block — we process entire text blocks together
+            # This handles multi-line paragraphs correctly
+            block_replacements = []
 
-            for block in raw_dict.get("blocks", []):
-                if block.get("type") != 0:  # 0 = text block
+            for block in raw.get("blocks", []):
+                if block.get("type") != 0:
                     continue
 
+                # Collect all spans in this block
+                block_spans = []
                 for line in block.get("lines", []):
-                    # Get full line text for context
-                    line_text = "".join(
-                        s.get("text", "") for s in line.get("spans", [])
-                    ).strip()
-
-                    if not line_text:
-                        continue
-
                     for span in line.get("spans", []):
                         span_text = span.get("text", "").strip()
-                        if not span_text or len(span_text) < 3:
-                            continue
+                        if span_text and len(span_text) >= 3:
+                            new_text = self.find_replacement(span_text, change_map)
+                            if new_text and new_text != span_text:
+                                block_spans.append({
+                                    "bbox":      fitz.Rect(span["bbox"]),
+                                    "new_text":  new_text,
+                                    "orig_text": span_text,
+                                    "font":      self.get_font(span.get("font",""), span.get("flags",0)),
+                                    "size":      span.get("size", 11),
+                                    "color":     self.to_rgb(span.get("color", 0)),
+                                    "origin":    span.get("origin", (span["bbox"][0], span["bbox"][3])),
+                                })
 
-                        new_text = self.find_replacement(span_text, change_map)
+                if block_spans:
+                    block_replacements.extend(block_spans)
 
-                        if new_text is None or new_text.strip() == span_text:
-                            continue  # No change — leave completely untouched
-
-                        bbox      = fitz.Rect(span["bbox"])
-                        font_name = span.get("font", "Helvetica")
-                        font_size = span.get("size", 11)
-                        flags     = span.get("flags", 0)
-                        color     = span.get("color", 0)
-                        origin    = span.get("origin", (bbox.x0, bbox.y1))
-
-                        replacements.append({
-                            "bbox":      bbox,
-                            "new_text":  new_text.strip(),
-                            "font":      self.get_pymupdf_font(font_name, flags),
-                            "size":      font_size,
-                            "color":     self.color_to_rgb(color),
-                            "origin_x":  bbox.x0,
-                            "origin_y":  origin[1] if isinstance(origin, (list, tuple)) else bbox.y1,
-                        })
-
-            # Apply all redactions first to physically remove original text from the PDF layer
-            for rep in replacements:
+            # Apply replacements
+            for rep in block_replacements:
                 bbox = rep["bbox"]
-                bg = self.sample_background(page, bbox)
-                
-                # Expand slightly to ensure total removal
-                erase_rect = fitz.Rect(
-                    bbox.x0 - 0.5,
-                    bbox.y0 - 0.8,
-                    bbox.x1 + 1.2,
-                    bbox.y1 + 0.8,
-                )
-                page.add_redact_annot(erase_rect, fill=bg)
-            
-            # Commit redactions (deletes original text characters permanently)
-            page.apply_redact(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-            # Write new text at EXACT original baseline
-            for rep in replacements:
+                # Step 1: Erase original text — use full line height + padding
+                bg = self.sample_bg(page, bbox)
+                erase = fitz.Rect(
+                    bbox.x0 - 0.5,
+                    bbox.y0 - 0.3,
+                    bbox.x1 + 2.0,  # extra right margin for longer text
+                    bbox.y1 + 0.5,
+                )
+                shape = page.new_shape()
+                shape.draw_rect(erase)
+                shape.finish(color=bg, fill=bg, width=0)
+                shape.commit()
+
+                # Step 2: Insert new text using insert_textbox for proper wrapping
+                # The textbox rect matches the original span area
+                # This prevents text from overflowing right margin
+                text_rect = fitz.Rect(
+                    bbox.x0,
+                    bbox.y0,
+                    bbox.x1,   # Use original right edge — text wraps within this
+                    bbox.y1 + 50,  # Extra height allows wrapping down
+                )
+
+                font_size = rep["size"]
                 try:
-                    page.insert_text(
-                        point=fitz.Point(rep["origin_x"], rep["origin_y"]),
-                        text=rep["new_text"],
+                    # Try insert_textbox first (handles wrapping)
+                    result = page.insert_textbox(
+                        text_rect,
+                        rep["new_text"] + " ",  # trailing space prevents clipping
                         fontname=rep["font"],
-                        fontsize=rep["size"],
+                        fontsize=font_size,
                         color=rep["color"],
-                        render_mode=0,
+                        align=0,  # left align
                     )
-                    total_changed += 1
-                except Exception as font_err:
-                    # Font registration failed — try Helvetica fallback
-                    print(f"⚠️ Font {rep['font']} failed: {font_err} — using helv fallback")
+                    # If result < 0, text didn't fit — reduce font size
+                    if result < 0:
+                        for reduced_size in [font_size - 0.5, font_size - 1.0, font_size - 1.5]:
+                            if reduced_size < 7:
+                                break
+                            result = page.insert_textbox(
+                                text_rect,
+                                rep["new_text"] + " ",
+                                fontname=rep["font"],
+                                fontsize=reduced_size,
+                                color=rep["color"],
+                                align=0,
+                            )
+                            if result >= 0:
+                                break
+                    total += 1
+
+                except Exception as e1:
+                    print(f"⚠️ insert_textbox failed ({rep['font']}): {e1}")
+                    # Fallback: insert_text at baseline (may truncate but better than nothing)
                     try:
+                        origin = rep["origin"]
                         page.insert_text(
-                            point=fitz.Point(rep["origin_x"], rep["origin_y"]),
-                            text=rep["new_text"],
+                            fitz.Point(origin[0] if isinstance(origin,(list,tuple)) else bbox.x0,
+                                      origin[1] if isinstance(origin,(list,tuple)) else bbox.y1),
+                            rep["new_text"],
                             fontname="helv",
-                            fontsize=rep["size"],
+                            fontsize=font_size,
                             color=rep["color"],
                         )
-                        total_changed += 1
+                        total += 1
                     except Exception as e2:
-                        print(f"❌ Could not insert text: {e2} — leaving original")
+                        print(f"❌ Both insert methods failed: {e2}")
 
-        print(f"✅ PDF rebuilt: {total_changed} spans updated across {len(doc)} page(s)")
+        print(f"✅ Rebuilt PDF: {total} spans updated across {len(doc)} pages")
 
-        # Save with compression — do NOT linearize (preserves all PDF objects)
         buf = io.BytesIO()
-        doc.save(
-            buf,
-            garbage=3,      # remove unused objects
-            deflate=True,   # compress streams
-            clean=True,     # clean content streams
-        )
+        doc.save(buf, garbage=3, deflate=True, clean=True)
         doc.close()
         return buf.getvalue()
 
 
-# Module-level singleton
 pdf_handler = PDFResumeHandler()

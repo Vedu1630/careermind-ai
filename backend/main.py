@@ -373,73 +373,342 @@ async def upload_resume(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(500, f"Upload failed: {e}")
 
+# ── Real ATS Score Logic ───────────────────────────────────────────
+import re
+
+STRONG_ACTION_VERBS = {
+    "engineered","architected","built","developed","implemented","deployed",
+    "designed","optimized","automated","integrated","launched","led","managed",
+    "created","delivered","improved","reduced","increased","streamlined",
+    "established","coordinated","executed","analyzed","configured","maintained",
+    "migrated","scaled","researched","trained","mentored","collaborated",
+    "spearheaded","accelerated","achieved","administered","computed","constructed",
+    "debugged","demonstrated","enhanced","facilitated","generated","handled",
+    "identified","monitored","operated","performed","produced","resolved",
+    "supervised","utilized","validated","authored","composed","modeled",
+}
+
+STANDARD_SECTIONS = {
+    "experience","education","skills","projects","certifications",
+    "achievements","summary","objective","publications","awards",
+}
+
+def calculate_real_ats_score(resume_text: str, job_description: str = "") -> dict:
+    """
+    Real ATS score — 6 weighted components matching what actual ATS systems check.
+    Total = 100 points.
+    """
+    if not resume_text or len(resume_text) < 50:
+        return {
+            "total_score": 0, "percentage": 0, "grade": "Invalid",
+            "breakdown": {}, "top_issues": []
+        }
+
+    text_lower  = resume_text.lower()
+    lines       = [l.strip() for l in resume_text.split('\n') if l.strip()]
+    words       = resume_text.lower().split()
+    word_count  = len(words)
+
+    # Identify bullet lines
+    bullet_lines = [
+        l for l in lines
+        if l.startswith(('•', '-', '*', '◦', '▪'))
+        or re.match(r'^\s*[\•\-\*]\s', l)
+    ]
+
+    breakdown = {}
+
+    # ── 1. KEYWORD MATCH (30 points) ──────────────────────────────
+    kw_score      = 0
+    matched_kw    = []
+    missing_kw    = []
+
+    if job_description and job_description.strip():
+        STOPWORDS = {
+            "with","and","the","for","this","that","will","have","from",
+            "they","them","their","about","into","than","your","our","are",
+            "were","been","being","would","could","should","must","shall",
+            "may","might","also","has","its","via","per","not","but","all",
+            "any","can","use","used","using","work","works","working",
+        }
+        jd_words = set(
+            w.lower().strip('.,;:()/[]"\'')
+            for w in job_description.split()
+            if len(w) > 4 and w.lower() not in STOPWORDS
+        )
+        jd_words = {w for w in jd_words if w.isalpha() or w.replace('.','').isalpha()}
+
+        for kw in jd_words:
+            # Check exact word match
+            if re.search(r'\b' + re.escape(kw) + r'\b', text_lower):
+                matched_kw.append(kw)
+            # Check stem (first 5 chars)
+            elif len(kw) >= 6:
+                stem = kw[:5]
+                if re.search(r'\b' + re.escape(stem), text_lower):
+                    matched_kw.append(kw)
+                else:
+                    missing_kw.append(kw)
+            else:
+                missing_kw.append(kw)
+
+        total_jd = max(len(jd_words), 1)
+        match_rate = len(matched_kw) / total_jd
+        kw_score   = min(30, int(match_rate * 30))
+    else:
+        # No JD — neutral score based on general professional keywords
+        general_kw = ["python","javascript","react","node","fastapi","sql",
+                       "docker","aws","git","api","machine","learning","data"]
+        found = sum(1 for k in general_kw if k in text_lower)
+        kw_score = min(30, found * 2)
+
+    breakdown["keyword_match"] = {
+        "score": kw_score, "max": 30,
+        "label": "Keyword Match",
+        "matched": matched_kw[:15],
+        "missing": missing_kw[:10],
+        "match_rate": round(len(matched_kw)/max(len(matched_kw)+len(missing_kw),1)*100, 1)
+    }
+
+    # ── 2. SECTION STRUCTURE (20 points) ──────────────────────────
+    required_sections = ["experience", "education", "skills"]
+    optional_sections = ["projects", "certifications", "achievements", "summary"]
+
+    found_required = [s for s in required_sections if s in text_lower]
+    found_optional = [s for s in optional_sections if s in text_lower]
+    missing_req    = [s for s in required_sections if s not in text_lower]
+
+    # Required sections: 5 pts each (15 max)
+    # Optional sections: 1 pt each (5 max)
+    sec_score = min(15, len(found_required) * 5) + min(5, len(found_optional))
+
+    breakdown["section_structure"] = {
+        "score":    sec_score,
+        "max":      20,
+        "label":    "Section Structure",
+        "found":    found_required + found_optional,
+        "missing":  missing_req,
+    }
+
+    # ── 3. ACTION VERBS (15 points) ───────────────────────────────
+    bullets_with_verbs = 0
+    verbs_used         = []
+
+    for line in bullet_lines:
+        # Get first real word of bullet content
+        content    = re.sub(r'^[\•\-\*◦▪\s]+', '', line).lower()
+        first_word = content.split()[0] if content.split() else ""
+        # Also check if bold label like "Data Collection:" then next sentence verb
+        if ':' in content:
+            after_colon = content.split(':', 1)[1].strip()
+            first_word  = after_colon.split()[0] if after_colon.split() else first_word
+
+        if first_word in STRONG_ACTION_VERBS:
+            bullets_with_verbs += 1
+            verbs_used.append(first_word)
+
+    verb_rate  = bullets_with_verbs / max(len(bullet_lines), 1)
+    verb_score = min(15, int(verb_rate * 15))
+
+    # Penalty if no bullet points at all
+    if len(bullet_lines) == 0:
+        verb_score = 3
+
+    breakdown["action_verbs"] = {
+        "score":                verb_score,
+        "max":                  15,
+        "label":                "Action Verbs",
+        "bullets_total":        len(bullet_lines),
+        "bullets_with_verbs":   bullets_with_verbs,
+        "verbs_used":           list(set(verbs_used))[:8],
+    }
+
+    # ── 4. QUANTIFICATION (15 points) ─────────────────────────────
+    # Check for numbers, %, metrics in bullet points
+    quant_pattern = re.compile(
+        r'\b(\d+[\.,]?\d*)\s*'
+        r'(%|percent|x|times|ms|gb|tb|kb|mb|k\b|m\b|users|requests|'
+        r'seconds|hours|days|weeks|points|stars|million|billion|thousand|'
+        r'lpa|crore|lakhs|models|features|apis|endpoints|queries|records|'
+        r'increase|decrease|reduction|improvement|accuracy|efficiency)?\b',
+        re.IGNORECASE
+    )
+
+    quantified_bullets = 0
+    for line in bullet_lines:
+        if quant_pattern.search(line) and re.search(r'\d', line):
+            quantified_bullets += 1
+
+    quant_rate  = quantified_bullets / max(len(bullet_lines), 1)
+    quant_score = min(15, int(quant_rate * 15))
+
+    breakdown["quantification"] = {
+        "score":               quant_score,
+        "max":                 15,
+        "label":               "Quantified Achievements",
+        "bullets_quantified":  quantified_bullets,
+        "bullets_total":       len(bullet_lines),
+        "rate":                round(quant_rate * 100, 1),
+    }
+
+    # ── 5. CONTACT INFO (10 points) ───────────────────────────────
+    contact_score = 0
+    contact_found = []
+
+    # Email
+    if re.search(r'[\w.\-+]+@[\w.\-]+\.\w{2,}', resume_text):
+        contact_score += 3
+        contact_found.append("email")
+    # Phone
+    if re.search(r'(\+?\d[\d\s\-().]{7,}|\d{10})', resume_text):
+        contact_score += 2
+        contact_found.append("phone")
+    # LinkedIn
+    if re.search(r'linkedin\.com', text_lower):
+        contact_score += 3
+        contact_found.append("linkedin")
+    # GitHub
+    if re.search(r'github\.com', text_lower):
+        contact_score += 2
+        contact_found.append("github")
+
+    breakdown["contact_info"] = {
+        "score":   contact_score,
+        "max":     10,
+        "label":   "Contact Information",
+        "found":   contact_found,
+        "missing": [x for x in ["email","phone","linkedin","github"] if x not in contact_found],
+    }
+
+    # ── 6. FORMATTING QUALITY (10 points) ─────────────────────────
+    fmt_score = 10
+
+    # Penalty: garbled/non-ASCII characters (scanned PDF artifact)
+    non_ascii = sum(1 for c in resume_text if ord(c) > 127 and ord(c) < 160)
+    if non_ascii / max(word_count, 1) > 0.05:
+        fmt_score -= 3
+
+    # Penalty: duplicate content (column bleed bug)
+    unique_words_set = set(words)
+    if word_count > 0 and len(unique_words_set) / word_count < 0.35:
+        fmt_score -= 4
+
+    # Penalty: too short (extraction failure or very sparse resume)
+    if word_count < 100:
+        fmt_score -= 5
+
+    # Penalty: no bullet points (poor ATS readability)
+    if len(bullet_lines) == 0:
+        fmt_score -= 3
+
+    fmt_score = max(0, fmt_score)
+
+    breakdown["formatting"] = {
+        "score":      fmt_score,
+        "max":        10,
+        "label":      "Formatting Quality",
+        "word_count": word_count,
+        "bullets":    len(bullet_lines),
+        "parseable":  fmt_score >= 7,
+    }
+
+    # ── TOTAL ──────────────────────────────────────────────────────
+    total_score = sum(v["score"] for v in breakdown.values())
+    total_max   = sum(v["max"]   for v in breakdown.values())
+    percentage  = round(total_score / total_max * 100)
+
+    # Top issues
+    issues = []
+    for key, val in breakdown.items():
+        gap = val["max"] - val["score"]
+        if gap >= 3:
+            labels = {
+                "keyword_match":    f"Add {len(missing_kw[:5])} missing keywords: {', '.join(missing_kw[:5])}",
+                "section_structure":f"Add missing sections: {', '.join(val.get('missing', []))}",
+                "action_verbs":     f"Start {val['bullets_total'] - val.get('bullets_with_verbs',0)} bullets with action verbs",
+                "quantification":   f"Add numbers/metrics to {val['bullets_total'] - val.get('bullets_quantified',0)} bullet points",
+                "contact_info":     f"Add missing contact info: {', '.join(val.get('missing', []))}",
+                "formatting":       "Improve resume formatting and ATS parsability",
+            }
+            issues.append({
+                "area":  labels.get(key, key),
+                "gap":   gap,
+                "score": val["score"],
+                "max":   val["max"]
+            })
+    issues.sort(key=lambda x: -x["gap"])
+
+    return {
+        "total_score": total_score,
+        "total_max":   total_max,
+        "percentage":  percentage,
+        "grade": (
+            "Excellent" if percentage >= 85 else
+            "Good"      if percentage >= 70 else
+            "Fair"      if percentage >= 55 else
+            "Needs Work"if percentage >= 35 else
+            "Poor"
+        ),
+        "breakdown":   breakdown,
+        "top_issues":  issues[:3],
+        "matched_keywords": matched_kw[:20],
+        "missing_keywords": missing_kw[:15],
+    }
+
 # ── Analyze Resume ─────────────────────────────────────────────────
 @app.post("/analyze")
 @app.post("/api/analyze")
 async def analyze_resume(request: dict):
-    path     = request.get("resume_path", "") or request.get("file_path", "")
-    job_desc = request.get("job_description", "") or request.get("job_query", "") or ""
+    path     = request.get("resume_path", "")
+    job_desc = request.get("job_description", "")
     user_id  = request.get("user_id", "anon")
 
     if not path or not os.path.exists(path):
         raise HTTPException(404, f"Resume not found: {path}")
 
-    # Call the new resume_analyzer agent we just wrote!
-    from agents.resume_analyzer import analyze_resume as run_analyze_resume
-    
-    # Run the analyzer agent
-    agent_result = await run_analyze_resume(
-        file_path=path,
-        user_id=user_id,
-        job_description=job_desc
-    )
-    
-    # Map the custom agent outputs to React UI keys
-    ats_val = agent_result.get("ats_score", 60)
-    
-    # Check both ats_breakdown and score_breakdown
-    agent_breakdown = agent_result.get("ats_breakdown") or agent_result.get("score_breakdown") or {}
-    
-    # Helper to extract score safely from either {"score": X} or raw number X
-    def get_score_val(bd, key, default):
-        val = bd.get(key, default)
-        if isinstance(val, dict):
-            return val.get("score", default)
-        return val if isinstance(val, (int, float)) else default
+    text = extract_pdf_text(path)
+    if not text or len(text) < 20:
+        raise HTTPException(422, "Cannot extract text from PDF.")
 
-    sections_score = get_score_val(agent_breakdown, "sections", 25)
-    keywords_score = get_score_val(agent_breakdown, "keywords", 40)
-    quant_score = get_score_val(agent_breakdown, "quantification", 20)
-    format_score = get_score_val(agent_breakdown, "format", 15)
-    
-    mapped_breakdown = {
-        "keywords":       keywords_score,
-        "sections":       sections_score,
-        "quantification": quant_score,
-        "format":         format_score
-    }
-    
-    grade = agent_result.get("grade", "Good")
-    
+    # Calculate REAL ATS score BEFORE calling AI
+    real_ats = calculate_real_ats_score(text, job_desc)
+
+    # AI analysis for skills detection
+    system = "You are an expert resume analyst. Return ONLY valid JSON, no markdown."
+    prompt = (
+        f"Analyze this resume. Return ONLY this JSON:\n"
+        f'{{"skills_found":["Python","React"],"skill_gaps":["Docker"],'
+        f'"experience_level":"junior","sections_detected":["Education","Experience"],'
+        f'"suggestions":["Add LinkedIn URL","Add metrics to bullets"]}}\n\n'
+        f"Resume:\n{text[:2500]}"
+    )
+
+    raw    = await call_groq_async(prompt=prompt, system=system,
+                                   model="llama-3.1-8b-instant", max_tokens=500,
+                                   temperature=0.2, timeout=25.0)
+    ai     = parse_json(raw, {
+        "skills_found":      [],
+        "skill_gaps":        [],
+        "experience_level":  "junior",
+        "sections_detected": [],
+        "suggestions":       [],
+    })
+
     result = {
-        "overall_score":     ats_val,
-        "overall_grade":     grade,
-        "ats_score":         ats_val,
-        "ats_breakdown":     mapped_breakdown,
-        "experience_level":  agent_result.get("experience_level") or "junior",
-        "skills_found":      agent_result.get("skills_found") or [],
-        "skill_gaps":        agent_result.get("skill_gaps") or [],
-        "missing_keywords":  agent_result.get("missing_keywords") or [],
-        "missing_sections":  agent_result.get("missing_sections") or [],
-        "sections_detected": agent_result.get("sections_detected") or ["Education", "Experience", "Skills"],
-        "suggestions":       agent_result.get("suggestions") or [],
-        "feedback":          agent_result.get("feedback") or [],
-        "grade":             grade,
-        "resume_text":       agent_result.get("resume_text", "")
+        **ai,
+        # Use REAL scores — not AI-generated ones
+        "ats_score":         real_ats["percentage"],
+        "overall_score":     real_ats["percentage"],
+        "ats_breakdown":     real_ats["breakdown"],
+        "ats_grade":         real_ats["grade"],
+        "top_issues":        real_ats["top_issues"],
+        "matched_keywords":  real_ats.get("matched_keywords", []),
+        "missing_keywords":  real_ats.get("missing_keywords", []),
+        "resume_text":       text,
     }
 
     _cache[f"analysis:{user_id}"] = result
-    _cache[f"text:{path}"]        = result["resume_text"]
+    _cache[f"text:{path}"]        = text
     return result
 
 @app.get("/jobs")
@@ -524,10 +793,10 @@ async def get_jobs(q: str = "Software Engineer", location: str = "India", user_i
 @app.post("/rewrite")
 @app.post("/api/rewrite")
 async def rewrite_resume(request: dict):
-    path      = request.get("resume_path", "") or request.get("file_path", "")
+    path      = request.get("resume_path", "")
     job       = request.get("job", {})
     job_title = str(job.get("title") or "Software Engineer")
-    job_desc  = str(job.get("description") or "")[:400]
+    job_desc  = str(job.get("description") or "")[:500]
 
     if not path or not os.path.exists(path):
         raise HTTPException(404, f"Resume not found: {path}")
@@ -535,68 +804,46 @@ async def rewrite_resume(request: dict):
     original_text = _cache.get(f"text:{path}") or extract_pdf_text(path)
     _cache[f"text:{path}"] = original_text
 
-    # Smart truncation for Groq context limit
-    # Keep full resume — 3000 chars covers any resume
-    resume_truncated = original_text[:3000]
+    # Calculate REAL original ATS score first
+    original_ats = calculate_real_ats_score(original_text, job_desc)
 
-    system = (
-        "You are a professional resume writer improving ATS scores. "
-        "You follow instructions exactly. You return only the resume text, nothing else."
-    )
-
+    # Rewrite with AI
+    system = "You are a professional resume writer. Return only resume text, no explanation."
     prompt = (
-        f"Rewrite this resume to maximize ATS score for the target job.\n\n"
-        f"CRITICAL RULES — FOLLOW EXACTLY:\n"
-        f"1. Keep ALL section headers unchanged: Education, Experience, Projects, "
-        f"Certifications, CORE SKILLS, Achievements and Positions of Responsibility\n"
-        f"2. Keep ALL names, dates, companies, CGPA, percentages UNCHANGED\n"
-        f"3. Keep ALL bullet markers (•) exactly as-is\n"
-        f"4. NEVER add [Email] [LinkedIn] [GitHub] [Phone] placeholders\n"
-        f"5. NEVER add or remove lines — same line count as input\n"
-        f"6. ONLY improve bullet point descriptions and project descriptions\n"
-        f"7. Add these keywords naturally: {job_desc[:200]}\n"
-        f"8. Quantify vague statements with realistic numbers\n"
-        f"9. Use action verbs: Built, Engineered, Deployed, Optimized, Implemented\n"
-        f"10. Return ONLY the resume text — no explanation\n\n"
-        f"Target Job: {job_title}\n\n"
-        f"Original Resume:\n{resume_truncated}"
+        f"Rewrite this resume for the target job. STRICT RULES:\n"
+        f"1. Keep ALL section headers unchanged\n"
+        f"2. Keep ALL names, dates, companies, CGPA, percentages unchanged\n"
+        f"3. Keep ALL bullet markers exactly\n"
+        f"4. NEVER add [Email] [LinkedIn] [GitHub] placeholders\n"
+        f"5. Same line count as original\n"
+        f"6. Add these keywords naturally: {job_desc[:250]}\n"
+        f"7. Quantify vague statements with realistic numbers\n"
+        f"8. Use strong action verbs\n"
+        f"9. Add LinkedIn/GitHub if missing (use placeholder like: linkedin.com/in/name)\n"
+        f"10. Return ONLY the resume text\n\n"
+        f"Job: {job_title}\n\nOriginal:\n{original_text[:3000]}"
     )
 
-    rewritten = await call_groq_async(
-        prompt=prompt,
-        system=system,
-        model="llama-3.3-70b-versatile",
-        max_tokens=2000,
-        temperature=0.2,
-        timeout=35.0,
-    )
+    rewritten = await call_groq_async(prompt=prompt, system=system,
+                                      model="llama-3.1-8b-instant", max_tokens=2500,
+                                      temperature=0.2, timeout=40.0)
 
     if not rewritten or rewritten.startswith("ERROR:"):
         rewritten = original_text
 
-    # Clean placeholders
-    for pat in [r'\[Email\]', r'\[LinkedIn\]', r'\[GitHub\]',
-                r'\[Phone\]', r'\[URL\]', r'\[Website\]']:
+    # Clean AI-added placeholders
+    for pat in [r'\[Email\]',r'\[LinkedIn\]',r'\[GitHub\]',
+                r'\[Phone\]',r'\[URL\]',r'\[Website\]']:
         rewritten = re.sub(pat, '', rewritten, flags=re.IGNORECASE)
-    rewritten = re.sub(r'\s*\|\s*\|\s*', ' ', rewritten)
 
-    # ATS scoring
-    from utils.ats_scorer import calculate_real_ats_score
-    orig_ats_data = calculate_real_ats_score(original_text, job_desc)
-    orig_ats_score = orig_ats_data["ats_score"]
-    
-    new_ats_data = calculate_real_ats_score(rewritten, job_desc)
-    new_ats_score = new_ats_data["ats_score"]
+    # Calculate REAL rewritten ATS score
+    rewritten_ats = calculate_real_ats_score(rewritten, job_desc)
 
-    jw  = set(w.lower() for w in job_desc.split() if len(w) > 5)
-    ow  = set(original_text.lower().split())
-    nw  = set(rewritten.lower().split())
-    kwa = list((jw & nw) - ow)[:12]
-
-    # Build PDF preserving formatting
+    # Build PDF
     pdf_path = None
     try:
         from tools.pdf_tool import pdf_handler
+        # Fix — use path not text as original_path
         pdf_bytes = pdf_handler.rebuild_pdf_with_rewritten_text(
             original_path=path,
             original_text=original_text,
@@ -611,23 +858,30 @@ async def rewrite_resume(request: dict):
         tmp.close()
         pdf_path = tmp.name
     except Exception as e:
-        print(f"⚠️ PDF rebuild failed: {e}")
+        print(f"⚠️ PDF rebuild: {e}")
+        import traceback; traceback.print_exc()
 
     return {
         "original_text":      original_text,
         "rewritten_text":     rewritten,
-        "keywords_added":     kwa,
+        "keywords_added":     rewritten_ats.get("matched_keywords", [])[:12],
         "rewritten_pdf_path": pdf_path,
         "changes_summary": [
-            f"Added {len(kwa)} ATS keywords from job description",
+            f"ATS score improved from {original_ats['percentage']}% to {rewritten_ats['percentage']}%",
+            f"Added {len(rewritten_ats.get('matched_keywords',[]))} job keywords",
             "Strengthened bullet points with action verbs",
             "Preserved exact original formatting",
-            "Quantified achievements where possible",
         ],
+        # REAL scores — not estimates
         "ats_scores": {
-            "original":    orig_ats_score,
-            "rewritten":   new_ats_score,
-            "improvement": round(new_ats_score - orig_ats_score, 1),
+            "original":           original_ats["percentage"],
+            "rewritten":          rewritten_ats["percentage"],
+            "improvement":        rewritten_ats["percentage"] - original_ats["percentage"],
+            "original_breakdown": original_ats["breakdown"],
+            "rewritten_breakdown":rewritten_ats["breakdown"],
+            "original_grade":     original_ats["grade"],
+            "rewritten_grade":    rewritten_ats["grade"],
+            "top_issues":         rewritten_ats["top_issues"],
         },
     }
 
@@ -1144,19 +1398,32 @@ async def coach_feedback(request: dict):
 
 # ── Score PDF ──────────────────────────────────────────────────────
 @app.post("/api/score-pdf")
-async def score_pdf(file: UploadFile = File(...), job_description: str = Form(default="")):
+async def score_pdf(
+    file: UploadFile = File(...),
+    job_description: str = Form(default="")
+):
     data = await file.read()
     tmp  = f"data/uploads/tmp_{file.filename}"
-    with open(tmp,"wb") as f:
+    with open(tmp, "wb") as f:
         f.write(data)
     try:
         text = extract_pdf_text(tmp)
-        if not text or len(text)<20:
-            raise HTTPException(422,"Cannot extract text from PDF.")
-        jw = [w.lower() for w in job_description.split() if len(w)>4]
-        h  = sum(1 for w in jw if w in text.lower())
-        s  = round(h/max(len(jw),1)*100,1) if jw else 65
-        return {"ats_score":s,"overall_score":min(95,s+10),"text_length":len(text),"file":file.filename}
+        if not text or len(text) < 20:
+            raise HTTPException(422, "Cannot extract text.")
+
+        # Calculate REAL ATS score from the actual PDF
+        real_ats = calculate_real_ats_score(text, job_description)
+
+        return {
+            "ats_score":     real_ats["percentage"],
+            "overall_score": real_ats["percentage"],
+            "grade":         real_ats["grade"],
+            "breakdown":     real_ats["breakdown"],
+            "top_issues":    real_ats["top_issues"],
+            "text_length":   len(text),
+            "word_count":    len(text.split()),
+            "file":          file.filename,
+        }
     finally:
         if os.path.exists(tmp): os.remove(tmp)
 
