@@ -86,9 +86,7 @@ export const uploadResume = async (file, userId = '') => {
   const formData = new FormData();
   formData.append('file', file);
   if (userId) formData.append('user_id', userId);
-  const { data } = await api.post('/api/upload-resume', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
+  const { data } = await api.post('/api/upload-resume', formData);
   return data;
 };
 
@@ -139,9 +137,7 @@ export const scoreInterviewAnswer = async ({ audioBlob, question, jobTitle, user
   formData.append('user_id', userId || '');
   if (answerText) formData.append('answer_text', answerText);
 
-  const { data } = await api.post('/api/interview/score', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
+  const { data } = await api.post('/api/interview/score', formData);
   return data;
 };
 
