@@ -129,6 +129,11 @@ export default function ResumeUpload() {
     }
   }, [resumeEvents.length, status])
 
+  // Wake up backend on page mount to prevent Render cold starts during analysis
+  useEffect(() => {
+    fetch('https://careermind-ai-backend.onrender.com/health').catch(() => {});
+  }, []);
+
   // Sync status with store: if analysis exists but status is idle, show results
   useEffect(() => {
     if (resume?.analysis && status === 'idle') {
@@ -191,22 +196,53 @@ export default function ResumeUpload() {
       // Upload PDF
       setProgress(30)
       const uploadResult = await uploadResume(selectedFile, userId)
+      
+      if (!uploadResult?.file_path) {
+        throw new Error("Upload did not complete successfully");
+      }
+
       setResumePath(uploadResult.file_path, selectedFile.name)
       setProgress(50)
+
+      // Step 2: Small delay to ensure backend filesystem write is flushed
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Analyze
       setStatus('analyzing')
       setProgress(60)
-      const analysisResult = await analyzeResume({
-        filePath: uploadResult.file_path,
-        userId,
-      })
+      
+      let analysisResult;
+      try {
+        analysisResult = await analyzeResume({
+          filePath: uploadResult.file_path,
+          userId,
+        })
+      } catch (err) {
+        if (err.response?.status === 404 || err.message?.includes('404')) {
+          console.warn("⚠️ Resume not found on first try, retrying upload...");
+          const retryUpload = await uploadResume(selectedFile, userId);
+          setResumePath(retryUpload.file_path, selectedFile.name);
+          await new Promise(resolve => setTimeout(resolve, 800));
+          analysisResult = await analyzeResume({
+            filePath: retryUpload.file_path,
+            userId,
+          });
+        } else {
+          throw err;
+        }
+      }
+
       setProgress(100)
       setResumeAnalysis(analysisResult)
+
+      if (analysisResult?.resume_path) {
+        setResumePath(analysisResult.resume_path, selectedFile.name);
+      }
+
       setStatus('done')
     } catch (err) {
       console.error('Upload/analyze error:', err)
-      setErrorMsg(err?.response?.data?.detail || err.message || 'Analysis failed. Please try again.')
+      setErrorMsg(err?.response?.data?.detail || err?.userMessage || err?.message || 'Upload failed')
       setStatus('error')
     }
   }, [setResumePath, setResumeAnalysis])
@@ -327,11 +363,39 @@ export default function ResumeUpload() {
               {/* Error */}
               {status === 'error' && (
                 <motion.div
-                  initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                  className="flex items-center gap-2 p-4 rounded-xl bg-[#FEE2E2] border border-red-200 text-[#DC2626] text-sm"
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-4 p-4 bg-red-50 border border-red-100 rounded-2xl text-left w-full"
                 >
-                  <AlertCircle size={16} />
-                  {errorMsg}
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold text-red-700 mb-1">
+                        Upload failed
+                      </p>
+                      <p className="text-sm text-red-600 leading-relaxed">
+                        {errorMsg}
+                      </p>
+                      {errorMsg?.toLowerCase().includes("restarted") && (
+                        <p className="text-xs text-red-500 mt-2">
+                          This happens when the backend wakes up from sleep on Render's free tier.
+                          Simply click upload again — it will work the second time.
+                        </p>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setStatus('idle');
+                          setErrorMsg('');
+                          fileInputRef.current?.click();
+                        }}
+                        className="mt-3 px-4 py-2 bg-red-600 hover:bg-red-700 text-white
+                                   text-xs font-semibold rounded-lg transition-colors"
+                      >
+                        Try Upload Again
+                      </button>
+                    </div>
+                  </div>
                 </motion.div>
               )}
             </motion.div>

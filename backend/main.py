@@ -182,19 +182,34 @@ def parse_json(text: str, fallback: dict) -> dict:
     except Exception:
         return fallback
 
-def extract_pdf_text(path: str) -> str:
-    """Extract text from PDF."""
-    if not PDF_OK or not os.path.exists(path):
-        return ""
-    try:
-        with open(path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            return " ".join(p.extract_text() or "" for p in reader.pages).strip()
-    except Exception as e:
-        return f"PDF extraction error: {e}"
-
-# In-memory cache
+# In-memory caches
 _cache: dict = {}
+_file_cache: dict = {}  # path -> bytes
+
+def extract_pdf_text(path: str) -> str:
+    """Extract PDF text — checks memory cache first, then disk."""
+    if not PDF_OK:
+        return ""
+
+    # Try memory cache first (most reliable)
+    if path in _file_cache:
+        try:
+            import io
+            reader = PyPDF2.PdfReader(io.BytesIO(_file_cache[path]))
+            return " ".join(p.extract_text() or "" for p in reader.pages).strip()
+        except Exception as e:
+            print(f"Memory cache read failed: {e}")
+
+    # Fallback to disk
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                return " ".join(p.extract_text() or "" for p in reader.pages).strip()
+        except Exception as e:
+            print(f"Disk read failed: {e}")
+
+    return ""
 
 # ── FASTAPI APP ────────────────────────────────────────────────────
 from contextlib import asynccontextmanager
@@ -205,22 +220,28 @@ async def lifespan(app: FastAPI):
     # Warm up LLM in background
     async def warmup():
         await asyncio.sleep(2)
-        llm = get_llm()
-        if llm:
-            print("✅ LLM warmed up")
-        # Keep-alive ping
+        try:
+            pass
+        except Exception:
+            pass
+            
+    # Keep-alive ping
+    async def keep_alive():
+        await asyncio.sleep(30)
         while True:
-            await asyncio.sleep(840)  # 14 min
             try:
                 import httpx
                 url = os.getenv("RENDER_EXTERNAL_URL", "")
                 if url:
-                    async with httpx.AsyncClient(timeout=5.0) as c:
-                        await c.get(f"{url}/health")
-                    print("✅ Keep-alive ping sent")
-            except Exception:
-                pass
+                    async with httpx.AsyncClient(timeout=8.0) as c:
+                        r = await c.get(f"{url}/health")
+                    print(f"✅ Keep-alive ping: {r.status_code}")
+            except Exception as e:
+                print(f"⚠️ Keep-alive failed: {e}")
+            await asyncio.sleep(600)  # every 10 min instead of 14 — more aggressive
+
     asyncio.create_task(warmup())
+    asyncio.create_task(keep_alive())
     yield
     print("CareerMind AI shutting down")
 
@@ -364,14 +385,44 @@ async def diagnose():
 @app.post("/api/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
     try:
-        name = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename or "resume.pdf")
-        path = f"data/uploads/{name}"
-        data = await file.read()
+        # Ensure upload directory exists EVERY time (Render may wipe it)
+        os.makedirs("data/uploads", exist_ok=True)
+
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename or "resume.pdf")
+        # Add timestamp to avoid collisions
+        import time
+        timestamp = int(time.time())
+        unique_name = f"{timestamp}_{safe_name}"
+        path = f"data/uploads/{unique_name}"
+
+        content = await file.read()
+        if len(content) == 0:
+            raise HTTPException(400, "Uploaded file is empty")
+
         with open(path, "wb") as f:
-            f.write(data)
-        return {"file_path": path, "filename": name, "size": len(data)}
+            f.write(content)
+
+        # VERIFY the file was actually written
+        if not os.path.exists(path):
+            raise HTTPException(500, "File write failed — could not verify file exists")
+
+        actual_size = os.path.getsize(path)
+        print(f"✅ Upload saved: {path} ({actual_size} bytes)")
+
+        # ALSO store in memory as backup — survives even if disk write has issues
+        _file_cache[path] = content
+
+        return {
+            "file_path": path,
+            "filename":  unique_name,
+            "size":      actual_size,
+            "verified":  True,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"Upload failed: {e}")
+        print(f"❌ Upload failed: {e}")
+        raise HTTPException(500, f"Upload failed: {str(e)}")
 
 # ── Real ATS Score Logic ───────────────────────────────────────────
 import re
@@ -663,12 +714,49 @@ async def analyze_resume(request: dict):
     job_desc = request.get("job_description", "")
     user_id  = request.get("user_id", "anon")
 
-    if not path or not os.path.exists(path):
-        raise HTTPException(404, f"Resume not found: {path}")
+    print(f"📥 Analyze request — path: '{path}'")
 
-    text = extract_pdf_text(path)
+    if not path or path.strip() == "":
+        raise HTTPException(400, "No resume_path provided. Please upload a resume first.")
+
+    # Check multiple possible path variations (handles path format mismatches)
+    possible_paths = [
+        path,
+        path.lstrip("/"),
+        os.path.join("data/uploads", os.path.basename(path)),
+        os.path.abspath(path),
+    ]
+
+    actual_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            actual_path = p
+            break
+
+    if not actual_path and path in _file_cache:
+        actual_path = path  # use memory cache even if disk file is gone
+
+    if not actual_path:
+        # List what IS in the uploads folder for debugging
+        try:
+            existing_files = os.listdir("data/uploads")
+        except Exception:
+            existing_files = []
+
+        print(f"❌ File not found. Tried: {possible_paths}")
+        print(f"📁 Files actually in data/uploads: {existing_files}")
+
+        raise HTTPException(
+            404,
+            f"Resume file not found at '{path}'. "
+            f"This usually means the backend restarted after upload "
+            f"(common on Render free tier cold starts). "
+            f"Please upload your resume again."
+        )
+
+    text = extract_pdf_text(actual_path)
     if not text or len(text) < 20:
-        raise HTTPException(422, "Cannot extract text from PDF.")
+        raise HTTPException(422, "Cannot extract text from PDF. Ensure it is not a scanned image.")
 
     # Calculate REAL ATS score BEFORE calling AI
     real_ats = calculate_real_ats_score(text, job_desc)
@@ -705,10 +793,11 @@ async def analyze_resume(request: dict):
         "matched_keywords":  real_ats.get("matched_keywords", []),
         "missing_keywords":  real_ats.get("missing_keywords", []),
         "resume_text":       text,
+        "resume_path":       actual_path,  # return the path that actually worked
     }
 
     _cache[f"analysis:{user_id}"] = result
-    _cache[f"text:{path}"]        = text
+    _cache[f"text:{actual_path}"] = text
     return result
 
 @app.get("/jobs")
