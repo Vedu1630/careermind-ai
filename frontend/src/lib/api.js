@@ -17,8 +17,7 @@ const api = axios.create({
   baseURL: BACKEND_URL,
   timeout: 90000,  // 90 seconds — handles Render cold start
   headers: {
-    "Content-Type": "application/json",
-    "Accept":       "application/json",
+    "Accept": "application/json",
   },
 });
 
@@ -86,6 +85,7 @@ export const uploadResume = async (file, userId = '') => {
   const formData = new FormData();
   formData.append('file', file);
   if (userId) formData.append('user_id', userId);
+  
   const { data } = await api.post('/api/upload-resume', formData);
   return data;
 };

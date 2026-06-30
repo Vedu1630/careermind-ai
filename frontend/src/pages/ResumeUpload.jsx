@@ -374,9 +374,9 @@ export default function ResumeUpload() {
                         Upload failed
                       </p>
                       <p className="text-sm text-red-600 leading-relaxed">
-                        {errorMsg}
+                        {typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg)}
                       </p>
-                      {errorMsg?.toLowerCase().includes("restarted") && (
+                      {String(errorMsg || '').toLowerCase().includes("restarted") && (
                         <p className="text-xs text-red-500 mt-2">
                           This happens when the backend wakes up from sleep on Render's free tier.
                           Simply click upload again — it will work the second time.
