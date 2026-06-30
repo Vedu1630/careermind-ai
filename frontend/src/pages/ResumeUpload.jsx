@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { Upload, FileText, CheckCircle, AlertCircle, ArrowRight, Loader2, Sparkles, TrendingUp, Zap, Target, Brain } from 'lucide-react'
 import useStore from '../store/useStore'
-import { uploadResume, analyzeResume, getOrCreateToken, getUserId } from '../lib/api'
+import { uploadResume, analyzeResume, getOrCreateToken, getUserId, BACKEND_URL } from '../lib/api'
 import SkillBadge from '../components/SkillBadge'
 import { useAgentStream } from '../hooks/useAgentStream'
 
@@ -131,7 +131,7 @@ export default function ResumeUpload() {
 
   // Wake up backend on page mount to prevent Render cold starts during analysis
   useEffect(() => {
-    fetch('https://careermind-ai-backend.onrender.com/health').catch(() => {});
+    fetch(`${BACKEND_URL}/health`).catch(() => {});
   }, []);
 
   // Sync status with store: if analysis exists but status is idle, show results

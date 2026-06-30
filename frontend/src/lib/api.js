@@ -66,11 +66,18 @@ export const getOrCreateToken = async () => {
   const userId = localStorage.getItem('careermind_user_id');
   if (existing && userId) return { token: existing, userId };
 
-  // Use raw endpoint request
-  const { data } = await api.post('/api/auth/token', {});
-  localStorage.setItem('careermind_token', data.access_token);
-  localStorage.setItem('careermind_user_id', data.user_id);
-  return { token: data.access_token, userId: data.user_id };
+  try {
+    const { data } = await api.post('/api/auth/token', {});
+    localStorage.setItem('careermind_token', data.access_token);
+    localStorage.setItem('careermind_user_id', data.user_id);
+    return { token: data.access_token, userId: data.user_id };
+  } catch (e) {
+    // Auth endpoint may not exist — generate a local guest ID
+    const guestId = 'guest_' + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem('careermind_user_id', guestId);
+    localStorage.setItem('careermind_token', 'local');
+    return { token: 'local', userId: guestId };
+  }
 };
 
 export const getUserId = () => localStorage.getItem('careermind_user_id') || 'guest';
@@ -85,12 +92,11 @@ export const uploadResume = async (file, userId = '') => {
   return data;
 };
 
-export const analyzeResume = async ({ filePath, userId, jobQuery = 'Software Engineer', jobLocation = 'United States' }) => {
+export const analyzeResume = async ({ filePath, userId, jobQuery = '', jobLocation = 'United States' }) => {
   const { data } = await api.post('/api/analyze', {
-    file_path: filePath,
+    resume_path: filePath,
     user_id: userId,
-    job_query: jobQuery,
-    job_location: jobLocation,
+    job_description: jobQuery,
   });
   return data;
 };
