@@ -130,7 +130,7 @@ def get_gemini():
         return None
     try:
         genai.configure(api_key=key)
-        _gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        _gemini_model = genai.GenerativeModel('gemini-pro')
         print("✅ Gemini client initialized")
         return _gemini_model
     except Exception as e:
