@@ -60,6 +60,52 @@ if not kb.exists():
         "HTML CSS Tailwind Firebase Supabase Android iOS React Native Java C++"
     )
 
+# ── ADD GROQ ──────────────────────────────────────────────────────
+GROQ_OK = False
+_groq_client = None
+
+try:
+    from groq import Groq as GroqClient
+    GROQ_OK = True
+except Exception:
+    pass
+
+def get_groq():
+    global _groq_client
+    if _groq_client is not None:
+        return _groq_client
+    key = os.getenv("GROQ_API_KEY", "").strip()
+    if not key or not GROQ_OK:
+        return None
+    try:
+        _groq_client = GroqClient(api_key=key)
+        return _groq_client
+    except Exception:
+        return None
+
+def call_groq(prompt, system="You are a helpful AI assistant. Be concise and accurate.", model="llama-3.1-8b-instant", max_tokens=1000, temperature=0.3):
+    client = get_groq()
+    if client is None: return "ERROR: Groq not available."
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            max_tokens=max_tokens, temperature=temperature
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        return f"ERROR: {str(e)[:100]}"
+
+async def call_groq_async(prompt, system="You are a helpful AI assistant.", model="llama-3.1-8b-instant", max_tokens=1000, temperature=0.3, timeout=25.0):
+    import asyncio
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, lambda: call_groq(prompt, system, model, max_tokens, temperature)), timeout=timeout)
+    except asyncio.TimeoutError:
+        return "ERROR: Request timed out."
+    except Exception as e:
+        return f"ERROR: {str(e)[:100]}"
+
 # ── ADD GEMINI AS THE ONLY LLM ──────────────────────────────────────
 GEMINI_OK = False
 _gemini_model = None
