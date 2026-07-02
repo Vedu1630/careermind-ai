@@ -1,693 +1,544 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { useNavigate } from 'react-router-dom'
-import { Upload, FileText, CheckCircle, AlertCircle, ArrowRight, Loader2, Sparkles, TrendingUp, Zap, Target, Brain } from 'lucide-react'
-import useStore from '../store/useStore'
-import { uploadResume, analyzeResume, getOrCreateToken, getUserId, BACKEND_URL } from '../lib/api'
-import SkillBadge from '../components/SkillBadge'
-import { useAgentStream } from '../hooks/useAgentStream'
-
-// ── Animated score ring ───────────────────────────────────────────────────
-function ScoreRing({ score, label, color = '#6B5CE7', size = 80 }) {
-  const r = size * 0.38
-  const circ = 2 * Math.PI * r
-  const dash = (score / 100) * circ
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
-          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#E8E4FF" strokeWidth="6" />
-          <motion.circle
-            cx={size / 2} cy={size / 2} r={r}
-            fill="none" stroke={color} strokeWidth="6" strokeLinecap="round"
-            strokeDasharray={circ}
-            initial={{ strokeDashoffset: circ }}
-            animate={{ strokeDashoffset: circ - dash }}
-            transition={{ duration: 1.4, ease: 'easeOut', delay: 0.2 }}
-          />
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="font-sans font-extrabold text-base" style={{ color }}>{score}</span>
-          <span className="text-xs text-[#888]">/100</span>
-        </div>
-      </div>
-      <span className="text-xs text-[#888]">{label}</span>
-    </div>
-  )
-}
-
-// ── Section detection progress ─────────────────────────────────────────────
-function SectionTag({ section }) {
-  return (
-    <motion.span
-      initial={{ opacity: 0, scale: 0.8 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-[#E8E4FF] text-[#6B5CE7]"
-    >
-      ✓ {section}
-    </motion.span>
-  )
-}
-
-// ── Animated Analysis Loader (SaaS Style) ──────────────────────────────────
-function AnalysisLoader() {
-  const [stepIdx, setStepIdx] = useState(0);
-  const steps = [
-    "Extracting text from your PDF resume...",
-    "Analyzing your technical and behavioral skills...",
-    "Assessing ATS compatibility and formatting...",
-    "Mapping potential career paths and roles...",
-    "Generating tailored professional suggestions...",
-    "Finalizing your career profile dashboard..."
-  ];
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setStepIdx(prev => (prev + 1) % steps.length);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [steps.length]);
-
-  return (
-    <div className="flex flex-col items-center justify-center py-8 cursor-default" onClick={(e) => e.stopPropagation()}>
-      <motion.div
-        animate={{ 
-          scale: [1, 1.08, 0.94, 1.08, 1],
-          rotate: 360 
-        }}
-        transition={{ 
-          scale: { repeat: Infinity, duration: 3, ease: "easeInOut" },
-          rotate: { repeat: Infinity, duration: 12, ease: "linear" }
-        }}
-        className="w-16 h-16 rounded-2xl flex items-center justify-center mb-5 shadow-[0_4px_20px_rgba(107,92,231,0.15)] bg-gradient-to-br from-[#6B5CE7]/10 to-[#8B7CF8]/15 border border-[#6B5CE7]/20"
-      >
-        <Brain size={28} className="text-[#6B5CE7]" />
-      </motion.div>
-      <div className="text-center max-w-sm px-4">
-        <p className="font-sans font-bold text-[#111] text-base mb-1.5">Analyzing your career...</p>
-        <div className="min-h-[32px] flex items-center justify-center">
-          <AnimatePresence mode="wait">
-            <motion.p
-              key={stepIdx}
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
-              transition={{ duration: 0.3 }}
-              className="text-xs text-[#6B5CE7] font-medium font-sans leading-relaxed"
-            >
-              {steps[stepIdx]}
-            </motion.p>
-          </AnimatePresence>
-        </div>
-      </div>
-    </div>
-  );
-}
+import { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Upload, AlertCircle, Loader2, CheckCircle, RefreshCw } from "lucide-react";
+import api, { BACKEND_URL, wakeUpBackend } from "../lib/api";
+import { useStore } from "../store/useStore";
 
 export default function ResumeUpload() {
-  const navigate = useNavigate()
-  const { setResumePath, setResumeAnalysis, resume } = useStore()
-  const [dragging, setDragging] = useState(false)
-  const [file, setFile] = useState(null)
-  const [status, setStatus] = useState(() => resume?.analysis ? 'done' : 'idle') // idle | uploading | analyzing | done | error
-  const [progress, setProgress] = useState(0)
-  const [errorMsg, setErrorMsg] = useState('')
-  const fileInputRef = useRef(null)
+  const { setResume, setAnalysisData } = useStore();
+  const fileInputRef = useRef(null);
 
-  const { events } = useAgentStream()
-  const terminalEndRef = useRef(null)
+  const [dragOver,      setDragOver]      = useState(false);
+  const [selectedFile,  setSelectedFile]  = useState(null);
+  const [phase,         setPhase]         = useState("idle");
+  // phases: idle | waking | uploading | analyzing | done | error
+  const [statusMsg,     setStatusMsg]     = useState("");
+  const [error,         setError]         = useState(null);
+  const [analysisData,  setLocalAnalysis] = useState(null);
 
-  // Filter events for the Resume Analyzer agent stream
-  const resumeEvents = events.filter(
-    ev => ev.agent === 'Resume Analyzer' || ev.agent === 'CareerMind AI'
-  )
-
-  // Auto-scroll the terminal logs
+  // Wake up backend when page loads
   useEffect(() => {
-    if (status === 'analyzing') {
-      terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const isProduction = !BACKEND_URL.includes("localhost");
+    if (isProduction) {
+      // Silently wake backend in background so it's ready when user uploads
+      wakeUpBackend((status) => {
+        if (status === "waking") {
+          console.log("Backend waking up in background...");
+        }
+      });
     }
-  }, [resumeEvents.length, status])
-
-  // Wake up backend on page mount to prevent Render cold starts during analysis
-  useEffect(() => {
-    fetch(`${BACKEND_URL}/health`).catch(() => {});
   }, []);
 
-  // Sync status with store: if analysis exists but status is idle, show results
-  useEffect(() => {
-    if (resume?.analysis && status === 'idle') {
-      setStatus('done')
+  const processFile = useCallback(async (file) => {
+    if (!file || !file.name.toLowerCase().endsWith(".pdf")) {
+      setError("Please upload a PDF file only.");
+      return;
     }
-  }, [resume?.analysis, status])
+    if (file.size > 10 * 1024 * 1024) {
+      setError("File too large. Maximum size is 10MB.");
+      return;
+    }
 
-  // Helper to ensure all array items are strings, since LLMs sometimes return objects (e.g. {action, description})
-  const ensureStringArray = (arr) => {
-    if (!Array.isArray(arr)) return [];
-    return arr.map(item => {
-      if (typeof item === 'string') return item;
-      if (!item) return '';
-      if (typeof item === 'object') {
-        if (item.action && item.description) return `${item.action}: ${item.description}`;
-        return item.description || item.action || item.name || item.label || item.title || JSON.stringify(item);
+    setSelectedFile(file);
+    setError(null);
+    setLocalAnalysis(null);
+
+    const isProduction = !BACKEND_URL.includes("localhost");
+
+    // Step 1: Wake up backend if production
+    if (isProduction) {
+      setPhase("waking");
+      setStatusMsg("Connecting to backend...");
+
+      const isReady = await wakeUpBackend((status) => {
+        if (status === "waking") {
+          setStatusMsg("Backend is waking up from sleep — this takes 30-60 seconds on first use...");
+        } else if (status === "ready") {
+          setStatusMsg("Backend ready!");
+        } else if (status === "failed") {
+          setStatusMsg("Backend unreachable");
+        }
+      });
+
+      if (!isReady) {
+        setPhase("error");
+        setError(
+          "Cannot reach the backend server. " +
+          "Please wait 60 seconds and try again. " +
+          "If the problem persists, check if the backend is deployed at dashboard.render.com"
+        );
+        return;
       }
-      return String(item);
-    }).filter(Boolean);
+    }
+
+    // Step 2: Upload
+    setPhase("uploading");
+    setStatusMsg("Uploading your resume...");
+
+    let filePath = null;
+    let retryCount = 0;
+    const MAX_UPLOAD_RETRIES = 3;
+
+    while (retryCount < MAX_UPLOAD_RETRIES) {
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const uploadRes = await api.post("/api/upload-resume", formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+          timeout: 60000,
+        });
+
+        filePath = uploadRes.data?.file_path;
+        if (filePath) {
+          console.log("✅ Upload successful:", filePath);
+          break;
+        } else {
+          throw new Error("Upload succeeded but no file_path returned");
+        }
+      } catch (err) {
+        retryCount++;
+        console.warn(`Upload attempt ${retryCount} failed:`, err.message);
+
+        if (retryCount >= MAX_UPLOAD_RETRIES) {
+          setPhase("error");
+          setError(err.userMessage || `Upload failed after ${MAX_UPLOAD_RETRIES} attempts: ${err.message}`);
+          return;
+        }
+
+        setStatusMsg(`Upload attempt ${retryCount} failed, retrying...`);
+        await new Promise(r => setTimeout(r, 2000 * retryCount));
+      }
+    }
+
+    // Step 3: Save path to store
+    setResume({ path: filePath, filename: file.name });
+
+    // Step 4: Analyze
+    setPhase("analyzing");
+    setStatusMsg("AI is analyzing your resume...");
+
+    // Small delay to ensure file write is flushed on server
+    await new Promise(r => setTimeout(r, 800));
+
+    let analyzeRetry = 0;
+    const MAX_ANALYZE_RETRIES = 3;
+
+    while (analyzeRetry < MAX_ANALYZE_RETRIES) {
+      try {
+        const analyzeRes = await api.post("/api/analyze", {
+          resume_path:     filePath,
+          job_description: "",
+          user_id:         "anon",
+        }, { timeout: 60000 });
+
+        const data = analyzeRes.data;
+        setLocalAnalysis(data);
+        setAnalysisData?.(data);
+
+        // Update store with verified path
+        if (data?.resume_path) {
+          setResume({ path: data.resume_path, filename: file.name });
+        }
+
+        setPhase("done");
+        setStatusMsg("Analysis complete!");
+        break;
+
+      } catch (err) {
+        analyzeRetry++;
+        console.warn(`Analyze attempt ${analyzeRetry} failed:`, err.message);
+
+        if (err.response?.status === 404 && analyzeRetry < MAX_ANALYZE_RETRIES) {
+          // File not found — re-upload and retry
+          setStatusMsg(`Re-uploading resume (attempt ${analyzeRetry + 1})...`);
+          await new Promise(r => setTimeout(r, 1500));
+
+          try {
+            const formData2 = new FormData();
+            formData2.append("file", file);
+            const reUpload = await api.post("/api/upload-resume", formData2, {
+              headers: { "Content-Type": "multipart/form-data" },
+              timeout: 60000,
+            });
+            filePath = reUpload.data?.file_path || filePath;
+            setResume({ path: filePath, filename: file.name });
+            setStatusMsg("Retrying analysis...");
+            await new Promise(r => setTimeout(r, 1000));
+          } catch (reUploadErr) {
+            console.error("Re-upload failed:", reUploadErr);
+          }
+          continue;
+        }
+
+        if (analyzeRetry >= MAX_ANALYZE_RETRIES) {
+          setPhase("error");
+          setError(err.userMessage || err.response?.data?.detail || "Analysis failed. Please try again.");
+          return;
+        }
+
+        await new Promise(r => setTimeout(r, 2000 * analyzeRetry));
+      }
+    }
+  }, [setResume, setAnalysisData]);
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) processFile(file);
   };
 
-  const rawAnalysis = resume?.analysis
-  // ── Normalize analysis data to prevent crashes from unexpected API shapes ──
-  const analysis = rawAnalysis ? {
-    experience_level: rawAnalysis.experience_level || 'junior',
-    overall_score: typeof rawAnalysis.overall_score === 'number' ? rawAnalysis.overall_score : (parseFloat(rawAnalysis.overall_score) || 0),
-    overall_grade: rawAnalysis.overall_grade || '',
-    ats_score: typeof rawAnalysis.ats_score === 'number' ? rawAnalysis.ats_score : (parseFloat(rawAnalysis.ats_score) || 0),
-    ats_breakdown: rawAnalysis.ats_breakdown && typeof rawAnalysis.ats_breakdown === 'object' && !Array.isArray(rawAnalysis.ats_breakdown)
-      ? rawAnalysis.ats_breakdown : null,
-    overall_breakdown: rawAnalysis.overall_breakdown && typeof rawAnalysis.overall_breakdown === 'object' && !Array.isArray(rawAnalysis.overall_breakdown)
-      ? rawAnalysis.overall_breakdown : null,
-    skills_found: ensureStringArray(rawAnalysis.skills_found),
-    skill_gaps: ensureStringArray(rawAnalysis.skill_gaps),
-    missing_keywords: ensureStringArray(rawAnalysis.missing_keywords),
-    sections_detected: ensureStringArray(rawAnalysis.sections_detected),
-    suggestions: ensureStringArray(rawAnalysis.suggestions),
-    feedback: ensureStringArray(rawAnalysis.feedback),
-  } : null
-  const analysisData = analysis
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (file) processFile(file);
+  };
 
-  const processFile = useCallback(async (selectedFile) => {
-    if (!selectedFile || !selectedFile.name.toLowerCase().endsWith('.pdf')) {
-      setErrorMsg('Please upload a PDF file.')
-      setStatus('error')
-      return
+  const handleRetry = () => {
+    if (selectedFile) {
+      processFile(selectedFile);
+    } else {
+      fileInputRef.current?.click();
     }
+  };
 
-    setResumeAnalysis(null)
-    setFile(selectedFile)
-    setStatus('uploading')
-    setProgress(10)
-    setErrorMsg('')
-
-    try {
-      // Ensure auth token
-      await getOrCreateToken()
-      const userId = getUserId()
-
-      // Upload PDF
-      setProgress(30)
-      const uploadResult = await uploadResume(selectedFile, userId)
-      
-      if (!uploadResult?.file_path) {
-        throw new Error("Upload did not complete successfully");
-      }
-
-      setResumePath(uploadResult.file_path, selectedFile.name)
-      setProgress(50)
-
-      // Step 2: Small delay to ensure backend filesystem write is flushed
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Analyze
-      setStatus('analyzing')
-      setProgress(60)
-      
-      let analysisResult;
-      try {
-        analysisResult = await analyzeResume({
-          filePath: uploadResult.file_path,
-          userId,
-        })
-      } catch (err) {
-        if (err.response?.status === 404 || err.message?.includes('404')) {
-          console.warn("⚠️ Resume not found on first try, retrying upload...");
-          const retryUpload = await uploadResume(selectedFile, userId);
-          setResumePath(retryUpload.file_path, selectedFile.name);
-          await new Promise(resolve => setTimeout(resolve, 800));
-          analysisResult = await analyzeResume({
-            filePath: retryUpload.file_path,
-            userId,
-          });
-        } else {
-          throw err;
-        }
-      }
-
-      setProgress(100)
-      setResumeAnalysis(analysisResult)
-
-      if (analysisResult?.resume_path) {
-        setResumePath(analysisResult.resume_path, selectedFile.name);
-      }
-
-      setStatus('done')
-    } catch (err) {
-      console.error('Upload/analyze error:', err)
-      setErrorMsg(err?.response?.data?.detail || err?.userMessage || err?.message || 'Upload failed')
-      setStatus('error')
-    }
-  }, [setResumePath, setResumeAnalysis])
-
-  // Drag handlers
-  const onDragOver = (e) => { e.preventDefault(); setDragging(true) }
-  const onDragLeave = () => setDragging(false)
-  const onDrop = (e) => {
-    e.preventDefault(); setDragging(false)
-    const f = e.dataTransfer.files?.[0]
-    if (f) processFile(f)
-  }
-  const onFileInput = (e) => {
-    const f = e.target.files?.[0]
-    if (f) processFile(f)
-  }
-
-  const isLoading = status === 'uploading' || status === 'analyzing'
+  const isLoading = ["waking", "uploading", "analyzing"].includes(phase);
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-10">
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
-        {/* Header */}
-        <div className="mb-8">
-          <p className="text-[11px] font-bold text-[#BBB] tracking-widest uppercase mb-2">Step 01</p>
-          <h1 className="font-sans font-extrabold text-3xl sm:text-4xl text-[#111] tracking-tight mb-2">
-            Upload Your <span className="bg-gradient-to-r from-[#6B5CE7] to-[#8B7CF8] bg-clip-text text-transparent">Resume</span>
-          </h1>
-          <p className="text-[#555]">Upload your PDF resume and our AI will analyze it in seconds.</p>
+    <motion.div
+      initial={{ opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="max-w-4xl mx-auto px-6 py-8"
+    >
+      {/* Header */}
+      <div className="mb-6">
+        <div className="text-xs font-bold text-[#6B5CE7] tracking-widest mb-1">STEP 01</div>
+        <h1 className="text-3xl font-extrabold text-[#111] tracking-tight">
+          Upload Your <span className="text-[#6B5CE7]">Resume</span>
+        </h1>
+        <p className="text-[#888] text-sm mt-1">
+          Upload your PDF resume and our AI will analyze it in seconds.
+        </p>
+      </div>
+
+      {/* Drop zone */}
+      <div
+        onDrop={handleDrop}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onClick={() => !isLoading && fileInputRef.current?.click()}
+        className={`relative border-2 border-dashed rounded-2xl p-12 text-center
+                    transition-all cursor-pointer mb-4 ${
+          dragOver
+            ? "border-[#6B5CE7] bg-[#F0EEFF] scale-[1.01]"
+            : isLoading
+              ? "border-[#6B5CE7]/40 bg-[#F0EEFF]/30 cursor-not-allowed"
+              : phase === "done"
+                ? "border-[#22C55E]/50 bg-[#F0FDF4]"
+                : "border-[#E8E4FF] bg-white hover:border-[#6B5CE7] hover:bg-[#F0EEFF]/50"
+        }`}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf"
+          className="hidden"
+          onChange={handleFileSelect}
+          disabled={isLoading}
+        />
+
+        {/* Icon */}
+        <div className={`w-16 h-16 rounded-2xl flex items-center justify-center
+                         mx-auto mb-4 ${
+          phase === "done" ? "bg-[#DCFCE7]" : "bg-[#F0EEFF]"
+        }`}>
+          {phase === "done" ? (
+            <CheckCircle className="w-8 h-8 text-[#22C55E]"/>
+          ) : isLoading ? (
+            <Loader2 className="w-8 h-8 text-[#6B5CE7] animate-spin"/>
+          ) : (
+            <Upload className="w-8 h-8 text-[#6B5CE7]"/>
+          )}
         </div>
 
-        {/* Drop zone */}
-        <AnimatePresence mode="wait">
-          {status !== 'done' && (
-            <motion.div
-              key="uploader"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <div
-                onDragOver={onDragOver}
-                onDragLeave={onDragLeave}
-                onDrop={onDrop}
-                onClick={() => !isLoading && fileInputRef.current?.click()}
-                className={`relative flex flex-col items-center justify-center rounded-2xl border-2 border-dashed p-12 transition-all duration-300 cursor-pointer mb-6 bg-white shadow-[0_2px_12px_rgba(0,0,0,0.06)] ${
-                  dragging
-                    ? 'border-[#6B5CE7] bg-[#F0EEFF] scale-[1.01]'
-                    : isLoading
-                    ? 'border-[#E8E4FF] cursor-not-allowed opacity-60'
-                    : 'border-[#E8E4FF] hover:border-[#6B5CE7] hover:bg-[#FAFAFF]'
-                }`}
-                style={{ minHeight: 240 }}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf"
-                  onChange={onFileInput}
-                  className="hidden"
-                />
+        {/* File name / status */}
+        {selectedFile ? (
+          <div>
+            <p className="text-[15px] font-bold text-[#111] mb-1">
+              {selectedFile.name}
+            </p>
+            <p className={`text-sm font-medium ${
+              phase === "waking"    ? "text-amber-500" :
+              phase === "uploading" ? "text-[#6B5CE7]" :
+              phase === "analyzing" ? "text-[#6B5CE7]" :
+              phase === "done"      ? "text-[#22C55E]" :
+              "text-[#888]"
+            }`}>
+              {statusMsg || "Ready to analyze"}
+            </p>
 
-                {isLoading ? (
-                  status === 'analyzing' ? (
-                    <AnalysisLoader />
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-6">
-                      <motion.div
-                        animate={{ scale: [1, 1.05, 0.95, 1] }}
-                        transition={{ repeat: Infinity, duration: 2 }}
-                        className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-                        style={{ background: 'linear-gradient(135deg, rgba(107,92,231,0.15), rgba(139,124,248,0.15))' }}
-                      >
-                        <Loader2 size={28} className="text-[#6B5CE7] animate-spin" />
-                      </motion.div>
-                      <div className="text-center">
-                        <p className="font-semibold text-[#111] mb-1">Uploading Resume...</p>
-                        <p className="text-sm text-[#555] font-mono">Saving your PDF file securely</p>
-                      </div>
-                    </div>
-                  )
-                ) : (
-                  <div className="flex flex-col items-center justify-center">
-                    <motion.div
-                      animate={dragging ? { scale: 1.2 } : { scale: 1 }}
-                      className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
-                      style={{ background: 'linear-gradient(135deg, rgba(107,92,231,0.15), rgba(139,124,248,0.15))' }}
-                    >
-                      <Upload size={28} className="text-[#6B5CE7]" />
-                    </motion.div>
-                    <div className="text-center">
-                      <p className="font-semibold text-[#111] mb-1">
-                        {file ? file.name : 'Drop your resume here'}
-                      </p>
-                      <p className="text-sm text-[#888]">or click to browse · PDF only</p>
-                    </div>
-                  </div>
-                )}
+            {/* Progress dots */}
+            {isLoading && (
+              <div className="flex justify-center gap-1.5 mt-3">
+                {[0,1,2].map(i => (
+                  <motion.div key={i}
+                    className="w-1.5 h-1.5 rounded-full bg-[#6B5CE7]"
+                    animate={{ y: [0, -5, 0] }}
+                    transition={{ duration: 0.6, repeat: Infinity, delay: i * 0.2 }}
+                  />
+                ))}
               </div>
+            )}
 
-              {/* Progress bar */}
-              {isLoading && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-6">
-                  <div className="flex justify-between text-xs text-[#888] mb-2">
-                    <span>{status === 'uploading' ? 'Uploading PDF' : 'Running AI analysis'}</span>
-                    <span>{progress}%</span>
+            {/* Phase indicator */}
+            {isLoading && (
+              <div className="flex items-center justify-center gap-3 mt-3">
+                {["waking","uploading","analyzing"].map((p, i) => (
+                  <div key={p} className="flex items-center gap-1.5">
+                    <div className={`w-2 h-2 rounded-full transition-all ${
+                      phase === p ? "bg-[#6B5CE7] animate-pulse scale-125" :
+                      ["waking","uploading","analyzing"].indexOf(phase) > i
+                        ? "bg-[#22C55E]"
+                        : "bg-[#E8E4FF]"
+                    }`}/>
+                    <span className="text-xs text-[#888] capitalize">
+                      {p === "waking" ? "Wake up" : p}
+                    </span>
+                    {i < 2 && <span className="text-[#E8E4FF] text-xs">→</span>}
                   </div>
-                  <div className="h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
-                    <motion.div
-                      className="h-full rounded-full bg-gradient-to-r from-[#6B5CE7] to-[#8B7CF8]"
-                      animate={{ width: `${progress}%` }}
-                      transition={{ duration: 0.5 }}
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div>
+            <p className="text-[15px] font-semibold text-[#333] mb-1">
+              Drop your resume here
+            </p>
+            <p className="text-sm text-[#AAA]">or click to browse · PDF only</p>
+          </div>
+        )}
+      </div>
+
+      {/* Error */}
+      <AnimatePresence>
+        {phase === "error" && error && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="p-4 bg-red-50 border border-red-100 rounded-2xl mb-4"
+          >
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5"/>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-red-700 mb-1">Upload failed</p>
+                <p className="text-sm text-red-600 leading-relaxed">{error}</p>
+
+                {error.includes("sleep") || error.includes("wake") || error.includes("reach") ? (
+                  <p className="text-xs text-red-500 mt-2 leading-relaxed">
+                    💡 The backend server sleeps on Render's free tier after 15 min of inactivity.
+                    The first upload after sleep takes 30-60 seconds. Click retry and wait.
+                  </p>
+                ) : null}
+
+                <button
+                  onClick={handleRetry}
+                  className="mt-3 flex items-center gap-2 px-4 py-2 bg-red-600
+                             hover:bg-red-700 text-white text-xs font-semibold
+                             rounded-lg transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5"/>
+                  {error.includes("reach") || error.includes("sleep")
+                    ? "Wake up backend and retry"
+                    : "Try again"
+                  }
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Success — show analysis results */}
+      {phase === "done" && analysisData && (
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-4"
+        >
+          {/* Score rings */}
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { label: "Overall Score", value: analysisData.overall_score,
+                color: "#6B5CE7", track: "#E8E4FF" },
+              { label: "ATS Score",     value: analysisData.ats_score,
+                color: "#22C55E", track: "#DCFCE7" },
+            ].map(({ label, value, color, track }) => {
+              const r    = 44;
+              const circ = 2 * Math.PI * r;
+              const dash = circ * ((value || 0) / 100);
+              return (
+                <div key={label}
+                  className="bg-white border border-[#E8E4FF] rounded-2xl p-5
+                             flex items-center gap-4 shadow-[0_2px_12px_rgba(107,92,231,0.06)]"
+                >
+                  <svg width="100" height="100" viewBox="0 0 100 100">
+                    <circle cx="50" cy="50" r={r}
+                      fill="none" stroke={track} strokeWidth="7"/>
+                    <motion.circle cx="50" cy="50" r={r}
+                      fill="none" stroke={color} strokeWidth="7"
+                      strokeLinecap="round"
+                      strokeDasharray={circ}
+                      initial={{ strokeDashoffset: circ }}
+                      animate={{ strokeDashoffset: circ - dash }}
+                      transition={{ duration: 1.2, ease: "easeOut" }}
+                      transform="rotate(-90 50 50)"
                     />
-                  </div>
-                </motion.div>
-              )}
-
-              {/* Error */}
-              {status === 'error' && (
-                <motion.div
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mt-4 p-4 bg-red-50 border border-red-100 rounded-2xl text-left w-full"
-                >
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold text-red-700 mb-1">
-                        Upload failed
-                      </p>
-                      <p className="text-sm text-red-600 leading-relaxed">
-                        {typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg)}
-                      </p>
-                      {String(errorMsg || '').toLowerCase().includes("restarted") && (
-                        <p className="text-xs text-red-500 mt-2">
-                          This happens when the backend wakes up from sleep on Render's free tier.
-                          Simply click upload again — it will work the second time.
-                        </p>
-                      )}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setStatus('idle');
-                          setErrorMsg('');
-                          fileInputRef.current?.click();
-                        }}
-                        className="mt-3 px-4 py-2 bg-red-600 hover:bg-red-700 text-white
-                                   text-xs font-semibold rounded-lg transition-colors"
-                      >
-                        Try Upload Again
-                      </button>
+                    <text x="50" y="46" textAnchor="middle"
+                      fill={color} fontSize="18" fontWeight="800"
+                      fontFamily="JetBrains Mono, monospace">
+                      {value ?? "--"}
+                    </text>
+                    <text x="50" y="60" textAnchor="middle"
+                      fill="#AAA" fontSize="10" fontFamily="Inter, sans-serif">
+                      /100
+                    </text>
+                  </svg>
+                  <div>
+                    <div className="text-xs text-[#AAA] mb-1">{label}</div>
+                    <div className="text-2xl font-extrabold font-mono" style={{color}}>
+                      {value ?? "--"}
+                    </div>
+                    <div className={`text-xs font-semibold mt-1 ${
+                      (value||0) >= 75 ? "text-[#22C55E]" :
+                      (value||0) >= 55 ? "text-[#6B5CE7]" :
+                      (value||0) >= 35 ? "text-amber-500" : "text-red-500"
+                    }`}>
+                      {(value||0) >= 75 ? "Excellent" :
+                       (value||0) >= 55 ? "Good" :
+                       (value||0) >= 35 ? "Fair" : "Needs Work"}
                     </div>
                   </div>
-                </motion.div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
+                </div>
+              );
+            })}
+          </div>
 
-        {/* ── Analysis Results ──────────────────────────────────────────── */}
-        <AnimatePresence>
-          {analysis && (
-            <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
-              className="space-y-6"
-            >
-              {/* Score cards row */}
-              <div className="bg-white border border-[#E8E4FF] rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06)] p-6">
-                <div className="flex items-center gap-2 mb-6">
-                  <Sparkles size={18} className="text-[#6B5CE7]" />
-                  <h2 className="font-sans font-semibold text-lg text-[#111]">Analysis Results</h2>
-                  <span className={`ml-auto inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
-                    analysis.experience_level === 'senior' ? 'bg-[#DCFCE7] text-[#16A34A]' :
-                    analysis.experience_level === 'mid' ? 'bg-[#E8E4FF] text-[#6B5CE7]' : 'bg-[#E8E4FF] text-[#6B5CE7]'
-                  }`}>
-                    {analysis.experience_level} level
+          {/* Skills found */}
+          {analysisData.skills_found?.length > 0 && (
+            <div className="bg-white border border-[#E8E4FF] rounded-2xl p-5">
+              <div className="text-xs font-bold text-[#BBB] tracking-widest mb-3">
+                SKILLS DETECTED ({analysisData.skills_found.length})
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {analysisData.skills_found.map(skill => (
+                  <span key={skill}
+                    className="px-2.5 py-1 bg-[#E8E4FF] text-[#6B5CE7]
+                               text-xs font-semibold rounded-full">
+                    ✓ {skill}
                   </span>
-                </div>
-
-                {/* Two animated score rings — both recalculated from actual PDF */}
-                <div className="grid grid-cols-2 gap-4 mt-4">
-                  {[
-                    {
-                      label: "Overall Score",
-                      value: analysisData?.overall_score,
-                      grade: analysisData?.overall_grade,
-                      color: "#6B5CE7",
-                      trackColor: "#E8E4FF"
-                    },
-                    {
-                      label: "ATS Score",
-                      value: analysisData?.ats_score,
-                      grade: analysisData?.ats_breakdown ? "ATS" : "",
-                      color: "#8B7CF8",
-                      trackColor: "#E8E4FF"
-                    }
-                  ].map(({ label, value, grade, color, trackColor }) => {
-                    const radius = 54;
-                    const circumference = 2 * Math.PI * radius;
-                    const parsedVal = typeof value === 'number' ? value : parseFloat(value);
-                    const safeVal = isNaN(parsedVal) ? 0 : parsedVal;
-                    const dash = (safeVal / 100) * circumference;
-
-                    return (
-                      <motion.div
-                        key={label}
-                        initial={{ opacity: 0, scale: 0.9 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="flex flex-col items-center p-4 bg-[#FAFAFF]
-                                   border border-[#E8E4FF] rounded-xl"
-                      >
-                        <svg width="130" height="130" viewBox="0 0 130 130">
-                          {/* Track */}
-                          <circle
-                            cx="65" cy="65" r={radius}
-                            fill="none"
-                            stroke={trackColor}
-                            strokeWidth="8"
-                          />
-                          {/* Animated fill */}
-                          <motion.circle
-                            cx="65" cy="65" r={radius}
-                            fill="none"
-                            stroke={color}
-                            strokeWidth="8"
-                            strokeLinecap="round"
-                            strokeDasharray={circumference}
-                            initial={{ strokeDashoffset: circumference }}
-                            animate={{ strokeDashoffset: circumference - dash }}
-                            transition={{ duration: 1.2, ease: "easeOut", delay: 0.3 }}
-                            transform="rotate(-90 65 65)"
-                          />
-                          {/* Score number */}
-                          <text
-                            x="65" y="60"
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            fill={color}
-                            fontSize="22"
-                            fontWeight="800"
-                            fontFamily="Inter, sans-serif"
-                          >
-                            {value ?? "--"}
-                          </text>
-                          <text
-                            x="65" y="78"
-                            textAnchor="middle"
-                            fill="#888888"
-                            fontSize="11"
-                            fontFamily="Inter, sans-serif"
-                          >
-                            /100
-                          </text>
-                        </svg>
-
-                        <span className="text-sm text-[#555] mt-1">{label}</span>
-
-                        {grade && (
-                          <span className={`mt-2 px-2 py-0.5 rounded-full text-xs font-medium
-                            ${grade === "Excellent" ? "bg-[#DCFCE7] text-[#16A34A] border border-green-200" :
-                              grade === "Good"      ? "bg-[#E8E4FF] text-[#6B5CE7] border border-[#E8E4FF]" :
-                              grade === "Fair"      ? "bg-[#FEF3C7] text-[#D97706] border border-amber-200" :
-                                                      "bg-[#FEE2E2] text-[#DC2626] border border-red-200"}`}
-                          >
-                            {grade}
-                          </span>
-                        )}
-                      </motion.div>
-                    );
-                  })}
-                </div>
-
-                {/* Overall Score Breakdown — collapsible */}
-                {analysisData?.overall_breakdown && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    className="mt-4 p-4 bg-[#FAFAFF] border border-[#E8E4FF] rounded-xl"
-                  >
-                    <div className="text-[11px] font-bold text-[#BBB] tracking-widest uppercase mb-3">
-                      Score Breakdown
-                    </div>
-                    <div className="space-y-2">
-                      {Object.values(analysisData.overall_breakdown || {}).map((item) => (
-                        <div key={item?.label || 'Score'} className="flex items-center gap-3">
-                          <span className="text-xs text-[#555] w-36 shrink-0">{item?.label || 'Section'}</span>
-                          <div className="flex-1 h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
-                            <motion.div
-                              initial={{ width: 0 }}
-                              animate={{ width: `${(((item?.score || 0) / (item?.max || 1)) * 100)}%` }}
-                              transition={{ duration: 0.8, ease: "easeOut" }}
-                              className="h-full rounded-full bg-[#6B5CE7]"
-                            />
-                          </div>
-                          <span className="text-xs font-mono text-[#555] w-10 text-right">
-                            {item?.score ?? 0}/{item?.max ?? 100}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-
-                {/* ATS Score Breakdown */}
-                {analysisData?.ats_breakdown && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    className="mt-4 p-4 bg-white border border-[#E8E4FF] rounded-2xl"
-                  >
-                    <div className="text-xs font-bold text-[#BBB] tracking-widest mb-3 uppercase">
-                      ATS Score Breakdown
-                    </div>
-                    <div className="space-y-2.5">
-                      {Object.values(analysisData.ats_breakdown).map((item) => (
-                        <div key={item.label} className="flex items-center gap-3">
-                          <span className="text-xs text-[#555] w-40 shrink-0">{item.label}</span>
-                          <div className="flex-1 h-1.5 bg-[#F0EEFF] rounded-full overflow-hidden">
-                            <motion.div
-                              initial={{ width: 0 }}
-                              animate={{ width: `${(item.score / item.max) * 100}%` }}
-                              transition={{ duration: 0.8 }}
-                              className={`h-full rounded-full ${
-                                item.score / item.max >= 0.7 ? "bg-emerald-400" :
-                                item.score / item.max >= 0.4 ? "bg-[#6B5CE7]" : "bg-red-400"
-                              }`}
-                            />
-                          </div>
-                          <span className="text-xs font-mono text-[#888] w-10 text-right">
-                            {item.score}/{item.max}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Top issues */}
-                    {analysisData?.top_issues?.length > 0 && (
-                      <div className="mt-4 pt-3 border-t border-[#F0EEFF]">
-                        <div className="text-xs font-bold text-red-400 mb-2">
-                          Top improvements needed:
-                        </div>
-                        {analysisData.top_issues.map((issue, i) => (
-                          <div key={i} className="flex items-start gap-2 text-xs text-[#888] mb-1">
-                            <span className="text-amber-400 shrink-0 mt-0.5">→</span>
-                            {issue.area}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </motion.div>
-                )}
+                ))}
               </div>
-
-              {/* Skills found */}
-              {analysis.skills_found?.length > 0 && (
-                <div className="bg-white border border-[#E8E4FF] rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06)] p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Target size={16} className="text-[#22C55E]" />
-                    <h3 className="font-semibold text-[#111]">Skills Detected</h3>
-                    <span className="ml-auto inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-[#DCFCE7] text-[#16A34A]">{analysis.skills_found?.length ?? 0} found</span>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {analysis.skills_found?.map((skill) => (
-                      <motion.div key={skill} initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }}>
-                        <SkillBadge skill={skill} variant="matched" />
-                      </motion.div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Skill gaps */}
-              {analysis.skill_gaps?.length > 0 && (
-                <div className="bg-white border border-[#E8E4FF] rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06)] p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <TrendingUp size={16} className="text-[#D97706]" />
-                    <h3 className="font-semibold text-[#111]">Skill Gaps to Address</h3>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {analysis.skill_gaps?.map((skill) => (
-                      <SkillBadge key={skill} skill={skill} variant="gap" />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Sections detected */}
-              {analysis.sections_detected?.length > 0 && (
-                <div className="bg-white border border-[#E8E4FF] rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06)] p-6">
-                  <h3 className="font-semibold text-[#111] mb-4 flex items-center gap-2">
-                    <FileText size={16} className="text-[#8B7CF8]" /> Sections Detected
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {analysis.sections_detected?.map((s) => <SectionTag key={s} section={s} />)}
-                  </div>
-                </div>
-              )}
-
-              {/* Suggestions */}
-              {analysis.suggestions?.length > 0 && (
-                <div className="bg-white border border-[#E8E4FF] rounded-2xl shadow-[0_2px_12px_rgba(0,0,0,0.06)] p-6">
-                  <h3 className="font-semibold text-[#111] mb-4 flex items-center gap-2">
-                    <Zap size={16} className="text-[#6B5CE7]" /> AI Suggestions
-                  </h3>
-                  <ul className="space-y-2">
-                    {analysis.suggestions?.map((s, i) => (
-                      <motion.li
-                        key={i}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: i * 0.05 }}
-                        className="flex items-start gap-2 text-sm text-[#555]"
-                      >
-                        <span className="text-[#6B5CE7] mt-0.5">→</span> {s}
-                      </motion.li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* CTA */}
-              <div className="flex flex-col sm:flex-row gap-3">
-                <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => navigate('/jobs')}
-                  className="flex-1 flex items-center justify-center gap-2 py-4 px-6 bg-gradient-to-r from-[#6B5CE7] to-[#8B7CF8] text-white font-bold rounded-xl shadow-md hover:shadow-lg transition-shadow"
-                >
-                  Find Matching Jobs <ArrowRight size={16} />
-                </motion.button>
-                <motion.button
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => { setStatus('idle'); setFile(null); setResumeAnalysis(null); }}
-                  className="py-4 px-6 bg-white border border-[#E8E4FF] text-[#6B5CE7] font-semibold rounded-xl hover:border-[#6B5CE7] transition-colors"
-                >
-                  Upload Different Resume
-                </motion.button>
-              </div>
-            </motion.div>
+            </div>
           )}
-        </AnimatePresence>
-      </motion.div>
-    </div>
-  )
+
+          {/* Skill gaps */}
+          {analysisData.skill_gaps?.length > 0 && (
+            <div className="bg-white border border-[#E8E4FF] rounded-2xl p-5">
+              <div className="text-xs font-bold text-[#BBB] tracking-widest mb-3">
+                SKILL GAPS TO ADDRESS
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {analysisData.skill_gaps.map(skill => (
+                  <span key={skill}
+                    className="px-2.5 py-1 bg-[#FEF3C7] text-[#D97706]
+                               text-xs font-semibold rounded-full">
+                    + {skill}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ATS Breakdown */}
+          {analysisData.ats_breakdown && (
+            <div className="bg-white border border-[#E8E4FF] rounded-2xl p-5">
+              <div className="text-xs font-bold text-[#BBB] tracking-widest mb-3">
+                ATS SCORE BREAKDOWN
+              </div>
+              <div className="space-y-3">
+                {Object.values(analysisData.ats_breakdown).map((item) => (
+                  <div key={item.label} className="flex items-center gap-3">
+                    <span className="text-xs text-[#555] w-44 shrink-0">{item.label}</span>
+                    <div className="flex-1 h-2 bg-[#F0EEFF] rounded-full overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(item.score/item.max)*100}%` }}
+                        transition={{ duration: 0.8 }}
+                        className={`h-full rounded-full ${
+                          item.score/item.max >= 0.7 ? "bg-[#22C55E]" :
+                          item.score/item.max >= 0.4 ? "bg-[#6B5CE7]" : "bg-red-400"
+                        }`}
+                      />
+                    </div>
+                    <span className="text-xs font-mono text-[#888] w-10 text-right">
+                      {item.score}/{item.max}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {/* Top issues */}
+              {analysisData.top_issues?.length > 0 && (
+                <div className="mt-4 pt-3 border-t border-[#F0EEFF]">
+                  <div className="text-xs font-bold text-amber-500 mb-2">
+                    Top improvements:
+                  </div>
+                  {analysisData.top_issues.map((issue, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs text-[#888] mb-1.5">
+                      <span className="text-amber-400 shrink-0">→</span>
+                      {issue.area}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Suggestions */}
+          {analysisData.suggestions?.length > 0 && (
+            <div className="bg-white border border-[#E8E4FF] rounded-2xl p-5">
+              <div className="text-xs font-bold text-[#BBB] tracking-widest mb-3">
+                AI SUGGESTIONS
+              </div>
+              <div className="space-y-2">
+                {analysisData.suggestions.map((s, i) => (
+                  <div key={i} className="flex items-start gap-2.5 text-sm text-[#555]">
+                    <div className="w-5 h-5 rounded-full bg-[#F0EEFF] flex items-center
+                                    justify-center text-[#6B5CE7] text-xs font-bold shrink-0 mt-0.5">
+                      {i+1}
+                    </div>
+                    {s}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Next step */}
+          <div className="bg-gradient-to-r from-[#6B5CE7] to-[#8B7CF8] rounded-2xl p-5">
+            <p className="text-white font-semibold mb-1">✅ Resume analyzed successfully!</p>
+            <p className="text-white/70 text-sm mb-4">
+              Go to Job Matches to find roles that fit your profile.
+            </p>
+            <a href="/jobs"
+              className="inline-block px-5 py-2.5 bg-white text-[#6B5CE7]
+                         font-bold text-sm rounded-xl hover:bg-[#F0EEFF] transition-colors">
+              Find Job Matches →
+            </a>
+          </div>
+        </motion.div>
+      )}
+    </motion.div>
+  );
 }

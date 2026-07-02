@@ -60,116 +60,93 @@ if not kb.exists():
         "HTML CSS Tailwind Firebase Supabase Android iOS React Native Java C++"
     )
 
-# ── ADD GROQ AS THE ONLY LLM ──────────────────────────────────────
-GROQ_OK     = False
-_groq_client = None
+# ── ADD GEMINI AS THE ONLY LLM ──────────────────────────────────────
+GEMINI_OK = False
+_gemini_model = None
 
 try:
-    from groq import Groq as GroqClient
-    GROQ_OK = True
-    print("✅ Groq package imported")
+    import google.generativeai as genai
+    GEMINI_OK = True
+    print("✅ Gemini package imported")
 except Exception as e:
-    print(f"❌ Groq import failed: {e} — run: pip install groq")
+    print(f"❌ Gemini import failed: {e} — run: pip install google-generativeai")
 
-def get_groq():
-    global _groq_client
-    if _groq_client is not None:
-        return _groq_client
-    if not GROQ_OK:
-        print("❌ Groq package not installed")
+def get_gemini():
+    global _gemini_model
+    if _gemini_model is not None:
+        return _gemini_model
+    if not GEMINI_OK:
+        print("❌ Gemini package not installed")
         return None
-    key = os.getenv("GROQ_API_KEY", "").strip()
+    key = os.getenv("GOOGLE_API_KEY", "").strip()
     if not key:
-        print("❌ GROQ_API_KEY not set in environment")
+        print("❌ GOOGLE_API_KEY not set in environment")
         return None
     try:
-        _groq_client = GroqClient(api_key=key)
-        print("✅ Groq client initialized")
-        return _groq_client
+        genai.configure(api_key=key)
+        _gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+        print("✅ Gemini client initialized")
+        return _gemini_model
     except Exception as e:
-        print(f"❌ Groq init failed: {e}")
+        print(f"❌ Gemini init failed: {e}")
         return None
 
-def call_groq(
+def call_gemini(
     prompt:      str,
     system:      str   = "You are a helpful AI assistant. Be concise and accurate.",
-    model:       str   = "llama-3.3-70b-versatile",
+    model:       str   = "gemini-1.5-flash",
     max_tokens:  int   = 1000,
     temperature: float = 0.3,
 ) -> str:
     """
-    Call Groq API synchronously.
+    Call Gemini API synchronously.
     Returns response text or ERROR: message.
-    Never throws — always returns a string.
     """
-    client = get_groq()
+    client = get_gemini()
     if client is None:
-        return "ERROR: Groq not available. Set GROQ_API_KEY in Render environment variables."
+        return "ERROR: Gemini not available. Set GOOGLE_API_KEY in Render environment variables."
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user",   "content": prompt},
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
+        gemini_model = genai.GenerativeModel(
+            model_name=model,
+            system_instruction=system,
+            generation_config=genai.types.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
         )
-        result = response.choices[0].message.content or ""
+        response = gemini_model.generate_content(prompt)
+        result = response.text or ""
         return result.strip()
     except Exception as e:
         err = str(e)
-        print(f"❌ Groq call failed ({model}): {err[:100]}")
-        if "rate_limit" in err.lower() or "429" in err:
-            # Rate limited — try smaller model
-            if model != "llama-3.1-8b-instant":
-                print("⚠️ Rate limited on 70b, retrying with 8b")
-                try:
-                    response = client.chat.completions.create(
-                        model="llama-3.1-8b-instant",
-                        messages=[
-                            {"role": "system", "content": system},
-                            {"role": "user",   "content": prompt},
-                        ],
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                    )
-                    return (response.choices[0].message.content or "").strip()
-                except Exception as e2:
-                    return f"ERROR: Rate limited. Wait 1 minute and try again."
-            return "ERROR: Rate limited. Wait 1 minute and try again."
-        if "api_key" in err.lower() or "auth" in err.lower():
-            return "ERROR: Invalid GROQ_API_KEY. Check Render environment variables."
+        print(f"❌ Gemini call failed ({model}): {err[:100]}")
         return f"ERROR: {err[:100]}"
 
-async def call_groq_async(
+async def call_gemini_async(
     prompt:      str,
     system:      str   = "You are a helpful AI assistant.",
-    model:       str   = "llama-3.3-70b-versatile",
+    model:       str   = "gemini-1.5-flash",
     max_tokens:  int   = 1000,
     temperature: float = 0.3,
     timeout:     float = 25.0,
 ) -> str:
-    """Async wrapper for Groq. Never throws."""
+    """Async wrapper for Gemini."""
+    import asyncio
     loop = asyncio.get_event_loop()
     try:
         result = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
-                lambda: call_groq(prompt, system, model, max_tokens, temperature)
+                lambda: call_gemini(prompt, system, model, max_tokens, temperature)
             ),
             timeout=timeout
         )
         return result
     except asyncio.TimeoutError:
-        print(f"⚠️ Groq timed out after {timeout}s")
+        print(f"⚠️ Gemini timed out after {timeout}s")
         return "ERROR: Request timed out. Please try again."
     except Exception as e:
         return f"ERROR: {str(e)[:100]}"
-
-# Backwards compatibility aliases
-call_gemini       = lambda p: call_groq(p)
-call_gemini_async = lambda p, timeout=25.0: call_groq_async(p, timeout=timeout)
 
 def parse_json(text: str, fallback: dict) -> dict:
     """Safely parse JSON from LLM response."""
@@ -213,37 +190,46 @@ def extract_pdf_text(path: str) -> str:
 
 # ── FASTAPI APP ────────────────────────────────────────────────────
 from contextlib import asynccontextmanager
+import asyncio
+import httpx
+import os
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("✅ FastAPI lifespan started")
-    # Warm up LLM in background
-    async def warmup():
-        await asyncio.sleep(2)
-        try:
-            pass
-        except Exception:
-            pass
-            
-    # Keep-alive ping
-    async def keep_alive():
-        await asyncio.sleep(30)
-        while True:
-            try:
-                import httpx
-                url = os.getenv("RENDER_EXTERNAL_URL", "")
-                if url:
-                    async with httpx.AsyncClient(timeout=8.0) as c:
-                        r = await c.get(f"{url}/health")
-                    print(f"✅ Keep-alive ping: {r.status_code}")
-            except Exception as e:
-                print(f"⚠️ Keep-alive failed: {e}")
-            await asyncio.sleep(600)  # every 10 min instead of 14 — more aggressive
+    print("🚀 CareerMind AI backend starting...")
 
-    asyncio.create_task(warmup())
-    asyncio.create_task(keep_alive())
+    async def self_ping():
+        """
+        Ping self every 10 minutes to prevent Render sleep.
+        UptimeRobot does it every 5 min externally.
+        This is the internal backup.
+        """
+        # Wait 45 seconds after startup before first ping
+        await asyncio.sleep(45)
+        render_url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+
+        while True:
+            if render_url:
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        response = await client.get(f"{render_url}/health")
+                        print(f"✅ Self-ping: {response.status_code}")
+                except Exception as e:
+                    print(f"⚠️ Self-ping failed: {e}")
+            await asyncio.sleep(600)  # every 10 minutes
+
+    # Start self-ping in background
+    ping_task = asyncio.create_task(self_ping())
+
+    print("✅ Backend ready. Self-ping active.")
     yield
-    print("CareerMind AI shutting down")
+
+    # Cleanup
+    ping_task.cancel()
+    try:
+        await ping_task
+    except asyncio.CancelledError:
+        pass
 
 app = FastAPI(
     title="CareerMind AI",
@@ -301,74 +287,74 @@ async def health_check():
         "status": "ok",
         "llm_provider": smart_llm.active_provider,
         "gemini_configured": bool(os.getenv("GOOGLE_API_KEY")),
-        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
+        "groq_configured": bool(os.getenv("GOOGLE_API_KEY")),
     }
 
 @app.get("/health")
 async def health():
-    groq_key = bool(os.getenv("GROQ_API_KEY", "").strip())
-    groq_test = "❌ GROQ_API_KEY not set in Render Environment"
-    groq_status = "missing"
+    gemini_key = bool(os.getenv("GOOGLE_API_KEY", "").strip())
+    gemini_test = "❌ GOOGLE_API_KEY not set in Render Environment"
+    gemini_status = "missing"
 
-    if groq_key and GROQ_OK:
+    if gemini_key and GEMINI_OK:
         try:
             loop   = asyncio.get_event_loop()
             result = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: call_groq("Say WORKING", max_tokens=5, model="llama-3.1-8b-instant")
+                    lambda: call_gemini("Say WORKING", max_tokens=5, model="gemini-1.5-flash")
                 ),
                 timeout=8.0
             )
             if result and not result.startswith("ERROR:"):
-                groq_test   = f"✅ working — {result[:20]}"
-                groq_status = "ok"
+                gemini_test   = f"✅ working — {result[:20]}"
+                gemini_status = "ok"
             else:
-                groq_test   = f"❌ {result[:80]}"
-                groq_status = "error"
+                gemini_test   = f"❌ {result[:80]}"
+                gemini_status = "error"
         except asyncio.TimeoutError:
-            groq_test   = "⚠️ key set but timed out (cold start)"
-            groq_status = "timeout"
+            gemini_test   = "⚠️ key set but timed out (cold start)"
+            gemini_status = "timeout"
         except Exception as e:
-            groq_test   = f"❌ {str(e)[:80]}"
-            groq_status = "error"
+            gemini_test   = f"❌ {str(e)[:80]}"
+            gemini_status = "error"
 
     return {
         "status":       "online",
-        "groq_api_key": "SET" if groq_key else "MISSING",
-        "groq_test":    groq_test,
-        "groq_status":  groq_status,
-        "llm":          "Groq LLaMA 3",
-        "llm_available": groq_key and GROQ_OK,
+        "gemini_api_key": "SET" if gemini_key else "MISSING",
+        "gemini_test":    gemini_test,
+        "gemini_status":  gemini_status,
+        "llm":          "Gemini 1.5 Flash",
+        "llm_available": gemini_key and GEMINI_OK,
         "routing": {
-            "all_features": "Groq LLaMA 3 (llama-3.3-70b-versatile)",
-            "conversation": "Groq LLaMA 3 (llama-3.1-8b-instant)",
+            "all_features": "Gemini 1.5 Flash",
+            "conversation": "Gemini 1.5 Flash",
         }
     }
 
 @app.get("/api/diagnose")
 async def diagnose():
     results = {}
-    groq_key = os.getenv("GROQ_API_KEY","").strip()
+    gemini_key = os.getenv("GOOGLE_API_KEY","").strip()
 
-    results["GROQ_API_KEY"] = "✅ SET" if groq_key else "❌ MISSING"
+    results["GOOGLE_API_KEY"] = "✅ SET" if gemini_key else "❌ MISSING"
 
-    # Diagnose Groq (Llama)
-    if groq_key and GROQ_OK:
+    # Diagnose Gemini
+    if gemini_key and GEMINI_OK:
         try:
             r = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, lambda: call_groq("Say OK", max_tokens=10)),
+                asyncio.get_event_loop().run_in_executor(None, lambda: call_gemini("Say OK", max_tokens=10)),
                 timeout=8.0
             )
             val = f"✅ {r[:40]}" if not r.startswith("ERROR:") else f"❌ {r[:80]}"
-            results["groq_llm"] = val
-            results["groq_coach"] = val
+            results["gemini_llm"] = val
+            results["gemini_coach"] = val
         except Exception as e:
-            results["groq_llm"] = f"❌ {str(e)[:80]}"
-            results["groq_coach"] = f"❌ {str(e)[:80]}"
+            results["gemini_llm"] = f"❌ {str(e)[:80]}"
+            results["gemini_coach"] = f"❌ {str(e)[:80]}"
     else:
-        results["groq_llm"] = "❌ GROQ_API_KEY missing"
-        results["groq_coach"] = "❌ GROQ_API_KEY missing"
+        results["gemini_llm"] = "❌ GOOGLE_API_KEY missing"
+        results["gemini_coach"] = "❌ GOOGLE_API_KEY missing"
 
     # Static checks
     results["chromadb"] = "✅ OK" if CHROMA_OK else "⚠️ NOT INSTALLED"
@@ -769,8 +755,8 @@ async def analyze_resume(request: dict):
         f"Resume:\n{text[:2500]}"
     )
 
-    raw    = await call_groq_async(prompt=prompt, system=system,
-                                   model="llama-3.1-8b-instant", max_tokens=500,
+    raw    = await call_gemini_async(prompt=prompt, system=system,
+                                   model="gemini-1.5-flash", max_tokens=500,
                                    temperature=0.2, timeout=25.0)
     ai     = parse_json(raw, {
         "skills_found":      [],
@@ -840,23 +826,23 @@ async def get_jobs(q: str = "Software Engineer", location: str = "India", user_i
             {"id":"d6","title":f"{q} Intern","company":"MNC Corp","location":"Ahmedabad","description":f"6-month {q} internship. Python, JavaScript.","apply_link":"https://linkedin.com/jobs","salary":"15000-25000/month","source":"demo","match_score":76,"matched_skills":["Python","JavaScript"],"missing_skills":[],"recommendation":"Good for freshers"},
         ]
 
-    # Score with Groq if profile available
+    # Score with Gemini if profile available
     analysis = _cache.get(f"analysis:{user_id}", {})
     skills   = analysis.get("skills_found", [])
 
-    if skills and GROQ_OK and os.getenv("GROQ_API_KEY"):
+    if skills and GEMINI_OK and os.getenv("GOOGLE_API_KEY"):
         profile = f"Skills: {', '.join(skills[:10])}. Level: {analysis.get('experience_level','junior')}"
 
         async def score_one(job):
             try:
-                raw = await call_groq_async(
+                raw = await call_gemini_async(
                     prompt=(
                         f"Rate job fit 0-100. Return ONLY JSON.\n"
                         f"Profile: {profile}\n"
                         f"Job: {job['title']} — {job['description'][:150]}\n"
                         f'{{"match_score":75,"matched_skills":["Python"],"missing_skills":["Docker"],"recommendation":"Good match"}}'
                     ),
-                    model="llama-3.1-8b-instant",
+                    model="gemini-1.5-flash",
                     max_tokens=150,
                     temperature=0.1,
                     timeout=8.0,
@@ -911,8 +897,8 @@ async def rewrite_resume(request: dict):
         f"Job: {job_title}\n\nOriginal:\n{original_text[:3000]}"
     )
 
-    rewritten = await call_groq_async(prompt=prompt, system=system,
-                                      model="llama-3.1-8b-instant", max_tokens=2500,
+    rewritten = await call_gemini_async(prompt=prompt, system=system,
+                                      model="gemini-1.5-flash", max_tokens=2500,
                                       temperature=0.2, timeout=40.0)
 
     if not rewritten or rewritten.startswith("ERROR:"):
@@ -1091,10 +1077,10 @@ async def interview_question(request: dict):
     )
 
     # ── USE GROQ (fast) ─────────────────────────────────────────
-    question = await call_groq_async(
+    question = await call_gemini_async(
         prompt=prompt,
         system=system,
-        model="llama-3.3-70b-versatile",  # smarter model for better questions
+        model="gemini-1.5-pro",  # smarter model for better questions
         max_tokens=150,
         temperature=0.8,
         timeout=10.0,
@@ -1152,10 +1138,10 @@ async def score_answer(request: dict):
     )
 
     # ── USE GROQ (fast scoring) ─────────────────────────────────
-    raw    = await call_groq_async(
+    raw    = await call_gemini_async(
         prompt=prompt,
         system=system,
-        model="llama-3.3-70b-versatile",
+        model="gemini-1.5-pro",
         max_tokens=300,
         temperature=0.3,
         timeout=12.0,
@@ -1201,10 +1187,10 @@ async def followup(request: dict):
         f"Return ONLY the follow-up question. One sentence."
     )
 
-    result = await call_groq_async(
+    result = await call_gemini_async(
         prompt=prompt,
         system=system,
-        model="llama-3.1-8b-instant",
+        model="gemini-1.5-flash",
         max_tokens=100,
         temperature=0.7,
         timeout=8.0,
@@ -1260,10 +1246,10 @@ async def interview_report(request: dict):
         f'"hire_recommendation":"Strong Hire|Hire|Maybe|No Hire"}}'
     )
 
-    raw    = await call_groq_async(
+    raw    = await call_gemini_async(
         prompt=prompt,
         system=system,
-        model="llama-3.3-70b-versatile",
+        model="gemini-1.5-pro",
         max_tokens=500,
         temperature=0.4,
         timeout=15.0,
@@ -1288,7 +1274,7 @@ async def coach_respond(request: dict):
     if not msg:
         return {"reply": "Hey! I'm Aria, your English coach. How are you doing today?"}
 
-    # Build conversation history for Groq (multi-turn format)
+    # Build conversation history for Gemini (multi-turn format)
     groq_messages = [
         {
             "role": "system",
@@ -1329,7 +1315,7 @@ async def coach_respond(request: dict):
                 loop.run_in_executor(
                     None,
                     lambda: client.chat.completions.create(
-                        model="llama-3.1-8b-instant",
+                        model="gemini-1.5-flash",
                         messages=groq_messages,
                         max_tokens=200,
                         temperature=0.85,
@@ -1339,11 +1325,11 @@ async def coach_respond(request: dict):
             )
             reply = result.choices[0].message.content or ""
         else:
-            raise Exception("Groq client not available")
+            raise Exception("Gemini client not available")
 
     except Exception as e:
-        print(f"⚠️ Groq coach failed: {e}")
-        # Fallback to general Groq wrapper (will try rate-limit fallback too)
+        print(f"⚠️ Gemini coach failed: {e}")
+        # Fallback to general Gemini wrapper (will try rate-limit fallback too)
         hist_str = "\n".join(
             f"{m.get('role','').upper()}: {m.get('content','')[:60]}"
             for m in (history or [])[-4:]
@@ -1355,10 +1341,10 @@ async def coach_respond(request: dict):
             f"History:\n{hist_str}\n\n"
             f"Student: {msg}\n\nAria:"
         )
-        reply = await call_groq_async(
+        reply = await call_gemini_async(
             prompt=groq_prompt,
             system="You are Aria, a warm English coach.",
-            model="llama-3.1-8b-instant",
+            model="gemini-1.5-flash",
             max_tokens=200,
             temperature=0.85,
             timeout=10.0
@@ -1455,10 +1441,10 @@ async def coach_feedback(request: dict):
         f'"topic_engagement":"how well they elaborated on topics"}}'
     )
 
-    raw    = await call_groq_async(
+    raw    = await call_gemini_async(
         prompt=prompt,
         system=system,
-        model="llama-3.3-70b-versatile",
+        model="gemini-1.5-pro",
         max_tokens=500,
         temperature=0.3,
         timeout=15.0,
