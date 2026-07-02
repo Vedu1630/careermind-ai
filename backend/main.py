@@ -801,8 +801,8 @@ async def analyze_resume(request: dict):
         f"Resume:\n{text[:2500]}"
     )
 
-    raw    = await call_gemini_async(prompt=prompt, system=system,
-                                   model="gemini-pro", max_tokens=500,
+    raw    = await call_groq_async(prompt=prompt, system=system,
+                                   model="llama-3.1-8b-instant", max_tokens=500,
                                    temperature=0.2, timeout=25.0)
     ai     = parse_json(raw, {
         "skills_found":      [],
@@ -881,14 +881,14 @@ async def get_jobs(q: str = "Software Engineer", location: str = "India", user_i
 
         async def score_one(job):
             try:
-                raw = await call_gemini_async(
+                raw = await call_groq_async(
                     prompt=(
                         f"Rate job fit 0-100. Return ONLY JSON.\n"
                         f"Profile: {profile}\n"
                         f"Job: {job['title']} — {job['description'][:150]}\n"
                         f'{{"match_score":75,"matched_skills":["Python"],"missing_skills":["Docker"],"recommendation":"Good match"}}'
                     ),
-                    model="gemini-pro",
+                    model="llama-3.1-8b-instant",
                     max_tokens=150,
                     temperature=0.1,
                     timeout=8.0,
@@ -943,8 +943,8 @@ async def rewrite_resume(request: dict):
         f"Job: {job_title}\n\nOriginal:\n{original_text[:3000]}"
     )
 
-    rewritten = await call_gemini_async(prompt=prompt, system=system,
-                                      model="gemini-pro", max_tokens=2500,
+    rewritten = await call_groq_async(prompt=prompt, system=system,
+                                      model="llama-3.1-8b-instant", max_tokens=2500,
                                       temperature=0.2, timeout=40.0)
 
     if not rewritten or rewritten.startswith("ERROR:"):
@@ -1123,10 +1123,10 @@ async def interview_question(request: dict):
     )
 
     # ── USE GROQ (fast) ─────────────────────────────────────────
-    question = await call_gemini_async(
+    question = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="gemini-pro",  # smarter model for better questions
+        model="llama-3.1-8b-instant",  # smarter model for better questions
         max_tokens=150,
         temperature=0.8,
         timeout=10.0,
@@ -1184,10 +1184,10 @@ async def score_answer(request: dict):
     )
 
     # ── USE GROQ (fast scoring) ─────────────────────────────────
-    raw    = await call_gemini_async(
+    raw    = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="gemini-pro",
+        model="llama-3.1-8b-instant",
         max_tokens=300,
         temperature=0.3,
         timeout=12.0,
@@ -1233,10 +1233,10 @@ async def followup(request: dict):
         f"Return ONLY the follow-up question. One sentence."
     )
 
-    result = await call_gemini_async(
+    result = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="gemini-pro",
+        model="llama-3.1-8b-instant",
         max_tokens=100,
         temperature=0.7,
         timeout=8.0,
@@ -1292,10 +1292,10 @@ async def interview_report(request: dict):
         f'"hire_recommendation":"Strong Hire|Hire|Maybe|No Hire"}}'
     )
 
-    raw    = await call_gemini_async(
+    raw    = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="gemini-pro",
+        model="llama-3.1-8b-instant",
         max_tokens=500,
         temperature=0.4,
         timeout=15.0,
@@ -1361,7 +1361,7 @@ async def coach_respond(request: dict):
                 loop.run_in_executor(
                     None,
                     lambda: client.chat.completions.create(
-                        model="gemini-pro",
+                        model="llama-3.1-8b-instant",
                         messages=groq_messages,
                         max_tokens=200,
                         temperature=0.85,
@@ -1387,10 +1387,10 @@ async def coach_respond(request: dict):
             f"History:\n{hist_str}\n\n"
             f"Student: {msg}\n\nAria:"
         )
-        reply = await call_gemini_async(
+        reply = await call_groq_async(
             prompt=groq_prompt,
             system="You are Aria, a warm English coach.",
-            model="gemini-pro",
+            model="llama-3.1-8b-instant",
             max_tokens=200,
             temperature=0.85,
             timeout=10.0
@@ -1487,10 +1487,10 @@ async def coach_feedback(request: dict):
         f'"topic_engagement":"how well they elaborated on topics"}}'
     )
 
-    raw    = await call_gemini_async(
+    raw    = await call_groq_async(
         prompt=prompt,
         system=system,
-        model="gemini-pro",
+        model="llama-3.1-8b-instant",
         max_tokens=500,
         temperature=0.3,
         timeout=15.0,

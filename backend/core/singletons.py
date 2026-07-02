@@ -45,9 +45,9 @@ import asyncio
 from functools import partial
 
 def call_gemini(prompt: str, quality: bool = False) -> str:
-    from main import call_gemini
-    return call_gemini(prompt)
+    from main import call_groq
+    return call_groq(prompt)
 
 async def call_gemini_async(prompt: str, quality: bool = False) -> str:
-    from main import call_gemini_async
-    return await call_gemini_async(prompt)
+    from main import call_groq_async
+    return await call_groq_async(prompt)
