@@ -277,6 +277,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
+_file_cache = {}
 app = FastAPI(
     title="CareerMind AI",
     version="2.0.0",
@@ -411,7 +412,46 @@ async def diagnose():
     return results
 
 # ── Upload Resume ──────────────────────────────────────────────────
-@app.post("/upload-resume")
+@app.post("/api/upload-resume")
+async def upload_resume(file: UploadFile = File(...)):
+    try:
+        os.makedirs("data/uploads", exist_ok=True)
+
+        safe  = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename or "resume.pdf")
+        ts    = int(__import__("time").time())
+        name  = f"{ts}_{safe}"
+        path  = f"data/uploads/{name}"
+
+        data  = await file.read()
+        if len(data) == 0:
+            raise HTTPException(400, "File is empty")
+
+        # Write to disk
+        with open(path, "wb") as f:
+            f.write(data)
+
+        # Also store in memory cache (survives disk issues)
+        _file_cache[path] = data
+
+        # Verify write succeeded
+        if not os.path.exists(path):
+            raise HTTPException(500, "File write verification failed")
+
+        size = os.path.getsize(path)
+        print(f"✅ Uploaded: {path} ({size} bytes)")
+
+        return {
+            "file_path": path,
+            "filename":  name,
+            "size":      size,
+            "verified":  True,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Upload error: {e}")
+        raise HTTPException(500, f"Upload failed: {str(e)}")
+
 @app.post("/api/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
     try:

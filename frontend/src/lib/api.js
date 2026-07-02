@@ -11,41 +11,35 @@ const getBackendURL = () => {
 export const BACKEND_URL = getBackendURL();
 console.log("🔗 Backend:", BACKEND_URL);
 
-// Standard API instance
 const api = axios.create({
   baseURL: BACKEND_URL,
-  timeout: 90000,  // 90 seconds — handles Render cold start
+  timeout: 120000,
   headers: {
     "Content-Type": "application/json",
-    "Accept":       "application/json",
+    "Accept": "application/json",
   },
 });
 
-api.interceptors.request.use((config) => {
-  if (import.meta.env.DEV) {
-    console.log(`→ ${config.method?.toUpperCase()} ${config.url}`);
-  }
+api.interceptors.request.use(config => {
+  console.log(`→ ${config.method?.toUpperCase()} ${config.url}`);
   return config;
 });
 
 api.interceptors.response.use(
-  (res) => res,
-  (error) => {
+  res => res,
+  error => {
     const status = error.response?.status;
     if (!error.response) {
-      error.userMessage =
-        BACKEND_URL.includes("localhost")
-          ? "Backend not running. Run: cd backend && uvicorn main:app --reload --port 8000"
-          : "Backend is waking up from sleep. Please wait 30-60 seconds and try again.";
+      error.userMessage = BACKEND_URL.includes("localhost")
+        ? "Backend not running. Start it: cd backend && uvicorn main:app --reload --port 8000"
+        : "Backend is sleeping. Wait 60 seconds and click retry.";
     } else if (status === 502) {
-      error.userMessage = "Server error (502). Backend may be restarting — wait 30s and retry.";
-    } else if (status === 503) {
-      error.userMessage = "Backend is starting up. Wait 30 seconds and retry.";
+      error.userMessage = "Server error (502). Wait 30 seconds and retry.";
     } else if (status === 404) {
-      error.userMessage = `Endpoint not found: ${error.config?.url}`;
+      error.userMessage = error.response?.data?.detail || `Not found: ${error.config?.url}`;
     } else if (status === 422) {
       const d = error.response.data?.detail;
-      error.userMessage = Array.isArray(d) ? d.map(x=>x.msg).join(", ") : d || "Invalid request.";
+      error.userMessage = Array.isArray(d) ? d.map(x => x.msg).join(", ") : d || "Invalid request.";
     } else {
       error.userMessage = error.response?.data?.detail || error.message || "Request failed.";
     }
@@ -54,41 +48,40 @@ api.interceptors.response.use(
 );
 
 /**
- * Wake up the backend — call this before any important action.
- * Shows real-time status. Returns true if backend is ready.
+ * Poll backend health until it responds or timeout.
+ * Calls onProgress(secondsWaited, maxSeconds) every second.
+ * Returns true if backend woke up, false if timed out.
  */
-export const wakeUpBackend = async (onStatus) => {
-  const isProduction = !BACKEND_URL.includes("localhost");
+export const waitForBackend = async (
+  onProgress,
+  maxWaitSeconds = 120
+) => {
+  const startTime = Date.now();
+  let attempt = 0;
 
-  try {
-    onStatus?.("checking");
-    const res = await axios.get(`${BACKEND_URL}/health`, { timeout: 90000 });
-    if (res.data?.status === "online") {
-      onStatus?.("ready");
-      return true;
-    }
-  } catch (err) {
-    if (isProduction) {
-      // Production: backend is sleeping — wait and retry
-      onStatus?.("waking");
-      // Give Render time to wake up
-      await new Promise(r => setTimeout(r, 15000));
-      // Retry
-      try {
-        const res2 = await axios.get(`${BACKEND_URL}/health`, { timeout: 90000 });
-        if (res2.data) {
-          onStatus?.("ready");
-          return true;
-        }
-      } catch (err2) {
-        onStatus?.("failed");
-        return false;
+  while (Date.now() - startTime < maxWaitSeconds * 1000) {
+    attempt++;
+    const secondsWaited = Math.floor((Date.now() - startTime) / 1000);
+    onProgress?.(secondsWaited, maxWaitSeconds);
+
+    try {
+      const res = await axios.get(`${BACKEND_URL}/health`, {
+        timeout: 10000,
+      });
+      if (res.data?.status === "online" || res.status === 200) {
+        console.log(`✅ Backend awake after ${secondsWaited}s`);
+        return true;
       }
-    } else {
-      onStatus?.("failed");
-      return false;
+    } catch (err) {
+      // Still sleeping — keep waiting
+      console.log(`⏳ Backend not ready yet (${secondsWaited}s elapsed)...`);
     }
+
+    // Wait 3 seconds between attempts
+    await new Promise(r => setTimeout(r, 3000));
   }
+
+  console.error(`❌ Backend did not wake up within ${maxWaitSeconds}s`);
   return false;
 };
 
