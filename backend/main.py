@@ -140,7 +140,7 @@ def get_gemini():
 def call_gemini(
     prompt:      str,
     system:      str   = "You are a helpful AI assistant. Be concise and accurate.",
-    model:       str   = "gemini-1.5-flash",
+    model:       str   = "gemini-1.5-flash-latest",
     max_tokens:  int   = 1000,
     temperature: float = 0.3,
 ) -> str:
@@ -171,7 +171,7 @@ def call_gemini(
 async def call_gemini_async(
     prompt:      str,
     system:      str   = "You are a helpful AI assistant.",
-    model:       str   = "gemini-1.5-flash",
+    model:       str   = "gemini-1.5-flash-latest",
     max_tokens:  int   = 1000,
     temperature: float = 0.3,
     timeout:     float = 25.0,
@@ -348,7 +348,7 @@ async def health():
             result = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: call_gemini("Say WORKING", max_tokens=5, model="gemini-1.5-flash")
+                    lambda: call_gemini("Say WORKING", max_tokens=5, model="gemini-1.5-flash-latest")
                 ),
                 timeout=8.0
             )
@@ -802,7 +802,7 @@ async def analyze_resume(request: dict):
     )
 
     raw    = await call_gemini_async(prompt=prompt, system=system,
-                                   model="gemini-1.5-flash", max_tokens=500,
+                                   model="gemini-1.5-flash-latest", max_tokens=500,
                                    temperature=0.2, timeout=25.0)
     ai     = parse_json(raw, {
         "skills_found":      [],
@@ -888,7 +888,7 @@ async def get_jobs(q: str = "Software Engineer", location: str = "India", user_i
                         f"Job: {job['title']} — {job['description'][:150]}\n"
                         f'{{"match_score":75,"matched_skills":["Python"],"missing_skills":["Docker"],"recommendation":"Good match"}}'
                     ),
-                    model="gemini-1.5-flash",
+                    model="gemini-1.5-flash-latest",
                     max_tokens=150,
                     temperature=0.1,
                     timeout=8.0,
@@ -944,7 +944,7 @@ async def rewrite_resume(request: dict):
     )
 
     rewritten = await call_gemini_async(prompt=prompt, system=system,
-                                      model="gemini-1.5-flash", max_tokens=2500,
+                                      model="gemini-1.5-flash-latest", max_tokens=2500,
                                       temperature=0.2, timeout=40.0)
 
     if not rewritten or rewritten.startswith("ERROR:"):
@@ -1236,7 +1236,7 @@ async def followup(request: dict):
     result = await call_gemini_async(
         prompt=prompt,
         system=system,
-        model="gemini-1.5-flash",
+        model="gemini-1.5-flash-latest",
         max_tokens=100,
         temperature=0.7,
         timeout=8.0,
@@ -1361,7 +1361,7 @@ async def coach_respond(request: dict):
                 loop.run_in_executor(
                     None,
                     lambda: client.chat.completions.create(
-                        model="gemini-1.5-flash",
+                        model="gemini-1.5-flash-latest",
                         messages=groq_messages,
                         max_tokens=200,
                         temperature=0.85,
@@ -1390,7 +1390,7 @@ async def coach_respond(request: dict):
         reply = await call_gemini_async(
             prompt=groq_prompt,
             system="You are Aria, a warm English coach.",
-            model="gemini-1.5-flash",
+            model="gemini-1.5-flash-latest",
             max_tokens=200,
             temperature=0.85,
             timeout=10.0
